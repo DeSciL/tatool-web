@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:7.0
+    container_name: tatool-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_DATABASE=tatool-web
+    volumes:
+      - mongodb_data:/data/db
+      - mongodb_config:/data/configdb
+    restart: unless-stopped
+    networks:
+      - tatool-network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  tatool-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tatool-web
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DB_URI=mongodb://mongodb:27017/tatool-web
+      # Uncomment and configure the following as needed:
+      # - JWT_SECRET=your-secret-key-here
+      # - PROJECTS_PATH_TYPE=local
+      # - PROJECTS_PATH=/app/app/projects/
+      # - PRIVATE_PATH_TYPE=local
+      # - PRIVATE_PATH=/app/app/projects/
+      # - RECAPTCHA_PRIVATE_KEY=your-recaptcha-key
+      # - EDITOR_USER=your-editor-user
+    volumes:
+      # Persist project data
+      - ./app/projects:/app/app/projects
+    restart: unless-stopped
+    networks:
+      - tatool-network
+    depends_on:
+      mongodb:
+        condition: service_healthy
+
+volumes:
+  mongodb_data:
+    driver: local
+  mongodb_config:
+    driver: local
+
+networks:
+  tatool-network:
+    driver: bridge

@@ -1,0 +1,52 @@
+# Node modules
+node_modules
+npm-debug.log
+
+# Git
+.git
+.gitignore
+
+# Docker files
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+test
+*.test.js
+*.spec.js
+
+# Documentation
+*.md
+!README.md
+
+# Build artifacts (will be created during build)
+dist
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs
+*.log
+
+# Coverage
+coverage
+.nyc_output
+
+# Temporary files
+tmp
+temp

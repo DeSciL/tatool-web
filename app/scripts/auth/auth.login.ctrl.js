@@ -55,15 +55,17 @@ function LoginCtrl($scope, $log, $state, $sce, $anchorScroll, $location, authSer
       } else if (credentials.userPassword !== credentials.userPassword2) {
         alertText = 'The passwords you entered don\'t match.';
         setAlert('danger', alertText);
-      } else if (!credentials.captcha && cfg.MODE === 'REMOTE') {
-        alertText = 'You have not solved the Captcha.';
-        setAlert('danger', alertText);
+      // Captcha check disabled for local development
+      // } else if (!credentials.captcha && cfg.MODE === 'REMOTE') {
+      //   alertText = 'You have not solved the Captcha.';
+      //   setAlert('danger', alertText);
       } else {
         hideAlert();
 
         spinnerService.spin('loadingSpinner');
 
-        authService.verifyCaptcha(credentials.captcha).then(function() {
+        // Captcha verification disabled for local development
+        // authService.verifyCaptcha(credentials.captcha).then(function() {
           authService.register(credentials).then(function() {
             spinnerService.stop('loadingSpinner');
             $state.go('login');
@@ -71,10 +73,10 @@ function LoginCtrl($scope, $log, $state, $sce, $anchorScroll, $location, authSer
             spinnerService.stop('loadingSpinner');
             setAlert('danger', error);
           });
-        }, function(error) {
-          spinnerService.stop('loadingSpinner');
-          setAlert('danger', error);
-        });
+        // }, function(error) {
+        //   spinnerService.stop('loadingSpinner');
+        //   setAlert('danger', error);
+        // });
       }
     };
 

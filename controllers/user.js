@@ -29,7 +29,7 @@ exports.register = function(req, res) {
         user.roles.push('developer');
         user.roles.push('analytics');
       }
-      user.verified = false;
+      user.verified = true; // Auto-verify for local development
       user.token = uuidv4();
       user.updated_at = new Date();
 
