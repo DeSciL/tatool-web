@@ -36,6 +36,9 @@ COPY --from=builder /app/models ./models
 COPY --from=builder /app/views ./views
 COPY --from=builder /app/server.js ./server.js
 COPY --from=builder /app/projects.json ./projects.json
+# Needed to provision the initial accounts in-cluster (kubectl exec / a one-shot Job),
+# since self-registration is disabled.
+COPY --from=builder /app/seed-users.js ./seed-users.js
 
 # Create a non-root user
 RUN addgroup -g 1001 -S nodejs && \

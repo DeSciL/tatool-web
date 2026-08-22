@@ -32,8 +32,11 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - DB_URI=mongodb://mongodb:27017/tatool-web
+      # Required: the server refuses to start in production without it. Local-only value.
+      - JWT_SECRET=local-development-only-do-not-use-in-production
+      # Self-registration is off by default; it needs captcha + mail configured to be safe.
+      # - REGISTRATION_ENABLED=true
       # Uncomment and configure the following as needed:
-      # - JWT_SECRET=your-secret-key-here
       # - PROJECTS_PATH_TYPE=local
       # - PROJECTS_PATH=/app/app/projects/
       # - PRIVATE_PATH_TYPE=local

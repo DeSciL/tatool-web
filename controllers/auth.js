@@ -32,14 +32,13 @@ exports.isAuthenticated = function(req, res, next) {
     }, function(err, user, info) {
       if (err) { return next(err) }
       if (user) {
-        // Email verification disabled for local development
-        // if (!user.verified) {
-        //   res.status(500).json({ message: 'Email address not yet verified. Please click on the link in your verification email to activate your account.', verify: true });
-        // } else {
+        if (!user.verified) {
+          res.status(500).json({ message: 'Email address not yet verified. Please click on the link in your verification email to activate your account.', verify: true });
+        } else {
           var token = user.createToken(req.app.get('jwt_secret'));
           res.json({ token: token, roles: user.roles, code: user.code });
-        // }
-        
+        }
+
       } else {
         res.status(401).json({ message: 'Unauthorized access!' });
       }

@@ -20,7 +20,24 @@ app.use(favicon(path.join(__dirname, 'dist/images/favicon.ico')));
 *******************************/
 app.set('port', process.env.PORT || 3000);
 app.set('env', process.env.NODE_ENV || process.argv[3] || 'prod');
+
+// A missing JWT_SECRET used to fall back silently to the literal 'secret', which makes every
+// token (including admin tokens) forgeable by anyone who reads this file. Refuse to start in
+// production rather than come up insecure; warn elsewhere so local runs still work.
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'secret') {
+  if (process.env.NODE_ENV === 'production') {
+    console.error('FATAL: JWT_SECRET is not set (or is the default \'secret\'). Refusing to start ' +
+      'with a forgeable token signing key. Set JWT_SECRET to a long random value.');
+    process.exit(1);
+  }
+  console.warn('WARNING: JWT_SECRET is not set. Using an insecure default. Never do this in production.');
+}
 app.set('jwt_secret', process.env.JWT_SECRET || 'secret');
+
+// Self-registration is disabled by default. It is unauthenticated, and with no mail transport
+// configured the registration path creates a usable account and then crashes the process.
+// Opt in explicitly with REGISTRATION_ENABLED=true (which also needs captcha + mail configured).
+app.set('registration_enabled', process.env.REGISTRATION_ENABLED === 'true');
 
 app.set('projects_path_type', process.env.PROJECTS_PATH_TYPE || 'local'); // local/gcs/legacy
 app.set('projects_path', process.env.PROJECTS_PATH || __dirname + '/app/projects/'); // path or gcs bucket name
@@ -140,7 +157,15 @@ router.delete('/admin/projects/:access/:project', adminCtrl.deleteProject);
 
 // User
 router.get('/user/roles', authCtrl.getRoles);
-router.post('/register', userCtrl.register);
+if (app.get('registration_enabled')) {
+  router.post('/register', userCtrl.register);
+} else {
+  router.post('/register', function(req, res) {
+    res.status(403).json({
+      message: 'Self-registration is disabled on this instance. Please contact the study administrator for an account.'
+    });
+  });
+}
 router.get('/login', authCtrl.isAuthenticated);
 
 // protect api with JWT

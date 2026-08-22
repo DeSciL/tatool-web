@@ -160,8 +160,12 @@ var update = function(req, res, userModule) {
 
 // Get a public URL module
 exports.getPublic = function(req, res) {
+  // moduleType must be checked here: without it any repository module (including 'private'
+  // invite-only ones) is retrievable through the unauthenticated public URL by guessing its
+  // moduleId, which is just created_by + timestamp.
   Repository.findOne({
-    moduleId: req.params.moduleId
+    moduleId: req.params.moduleId,
+    moduleType: 'public'
   }, function(err, module) {
     if (err) {
       res.status(500).send(err);
@@ -179,8 +183,11 @@ exports.getPublic = function(req, res) {
 
 // Adding a new module from an URL
 exports.installPublic = function(req, res) {
+  // See getPublic: 'public' guard prevents non-public modules being installed (and a temp user
+  // being minted for them) via the unauthenticated public login endpoint.
   Repository.findOne({
-    moduleId: req.params.moduleId
+    moduleId: req.params.moduleId,
+    moduleType: 'public'
   }, function(err, module) {
     if (err) {
       res.status(500).send(err);

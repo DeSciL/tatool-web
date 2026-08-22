@@ -29,7 +29,7 @@ exports.register = function(req, res) {
         user.roles.push('developer');
         user.roles.push('analytics');
       }
-      user.verified = true; // Auto-verify for local development
+      user.verified = false;
       user.token = uuidv4();
       user.updated_at = new Date();
 
@@ -60,9 +60,16 @@ exports.register = function(req, res) {
               sendVerificationEmail(message, function(error, success) {
                 if (error) {
                   console.error('Unable to send email: ' + error.message);
-                  user.deleteMany();
-                  res.status(500).json({
-                    message: 'Unable to send verification email. Please try again later.'
+                  // Roll back the half-created account. This used to call user.deleteMany(), which
+                  // does not exist on a document: it threw inside this callback, escaped Express'
+                  // error handling and killed the process, while leaving the account behind.
+                  User.deleteOne({ _id: user._id }, function(deleteErr) {
+                    if (deleteErr) {
+                      console.error('Unable to roll back user after email failure: ' + deleteErr.message);
+                    }
+                    res.status(500).json({
+                      message: 'Unable to send verification email. Please try again later.'
+                    });
                   });
                 } else {
                   if (req.body.devAccess) {
