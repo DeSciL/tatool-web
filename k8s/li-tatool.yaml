@@ -1,0 +1,226 @@
+# =============================================================================
+# REFERENCE COPY — NOT APPLIED FROM THIS REPO
+#
+# Source of truth: DescilK8S, li/li-tatool.yaml. Deploy from there, not here.
+# This copy exists so the app repo documents how the app is actually run, since
+# several settings below are load-bearing for application behaviour (see
+# README.md in this folder). If you change one, change it in DescilK8S first.
+#
+# Sanitised for a public repo:
+#   - container registry host replaced with <REGISTRY>
+# No secret *values* appear here or in the original: JWT_SECRET and DB_URI are
+# supplied via the `li-tatool` Secret, which is not in version control.
+# =============================================================================
+#
+# Tatool Web — AngularJS + Express platform for running cognitive tasks online.
+#
+# Upstream:   https://github.com/DeSciL/tatool-web  (branch `descil`)
+# Docs:       k8s/README.md in the app repo is the canonical deployment brief.
+#
+# Researchers log in to author "modules"; participants run them via an
+# unauthenticated public URL (/#!/public/<moduleId>?extid=<code>).
+#
+# Three things about this app are easy to get wrong, all of them silent:
+#
+#  1. Participant CSVs go to a HARDCODED relative path, uploads/<mode>/<moduleId>/.
+#     PRIVATE_PATH is accepted and then ignored on the local code path, so no env
+#     var can move it. Without the /app/uploads mount below, every participant's
+#     collected data is lost on any restart or reschedule. Project files can be
+#     re-uploaded; collected data cannot be re-collected.
+#  2. The image bakes ~57 MB of public task batteries into /app/app/projects.
+#     Mounting a volume there hides them — hence the seed initContainer.
+#  3. GET / returns 200 with MongoDB completely unreachable, so probing / would
+#     report a dead instance as healthy. Probe /readyz and /healthz instead.
+#
+# Self-registration is disabled by design, so a fresh instance has no users.
+# Provision them (passwords are printed once, capture them):
+#   kubectl -n li exec deploy/li-tatool -- node seed-users.js user@ethz.ch admin@ethz.ch:admin
+# Never bootstrap with `node server.js lab prod` — it creates the hardcoded,
+# publicly documented admin@tatool-web.com / 1234 on an internet-facing host.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: li-tatool
+  namespace: li
+spec:
+  # Keep at 1. PROJECTS_PATH_TYPE=local means researcher uploads land on the
+  # filesystem with no coordination between pods. Multi-replica is untested.
+  replicas: 1
+  revisionHistoryLimit: 3
+  # RollingUpdate, not Recreate. The deadlock that forces Recreate is
+  # ReadWriteOnce, where the new pod can never mount and the rollout hangs; this
+  # PVC is ReadWriteMany, so two pods can briefly coexist. Both writers are safe
+  # while they overlap: the seeder only adds files that are missing, and
+  # participant data is an idempotent whole-file fs.writeFile of the cumulative
+  # session, keyed by participant+session — not an append, so nothing interleaves.
+  # Recreate would instead mean a hard outage for the whole startup (the seeder
+  # stats ~2300 files before node boots, ~50s measured) on every image bump, with
+  # participants potentially mid-experiment.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: li-tatool
+  template:
+    metadata:
+      labels:
+        app: li-tatool
+    spec:
+      initContainers:
+        # Seed the baked-in task batteries into the volume that hides them.
+        #
+        # NOT `cp -rn`: busybox cp skips the whole subtree when the destination
+        # directory already exists, so it would seed nothing (verified in this
+        # image). Copy file by file, skipping what is already there, so a future
+        # image can add new upstream batteries without clobbering researcher
+        # edits. Quoting matters — several batteries have spaces in their names.
+        - name: seed-projects
+          # Same tag as the app container.
+          image: <REGISTRY>/li/tatool:v0.0.4
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              cd /app/app/projects
+              find . -type d -exec mkdir -p /seed/{} \;
+              find . -type f | while IFS= read -r f; do
+                [ -e "/seed/$f" ] || cp -p "$f" "/seed/$f"
+              done
+              echo "seeded: $(find /seed -type f | wc -l) files"
+          volumeMounts:
+            # Must NOT be /app/app/projects, or it hides its own source.
+            - { name: li-tatool-pvc, mountPath: /seed, subPath: projects }
+
+      containers:
+        - name: li-tatool-container
+          image: <REGISTRY>/li/tatool:v0.0.4
+          # Immutable version tags: pull only when the tag actually changes.
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            # Participant data — the highest-value volume. See note 1 above.
+            - { name: li-tatool-pvc, mountPath: /app/uploads,      subPath: uploads }
+            - { name: li-tatool-pvc, mountPath: /app/app/projects, subPath: projects }
+          ports:
+            - containerPort: 3000
+          env:
+            # Arms the JWT_SECRET check in the app; without it the check only warns.
+            - { name: NODE_ENV,            value: production }
+            # Trailing slashes are MANDATORY — the app concatenates strings, so
+            # a missing slash yields /app/app/projectspublic/... instead.
+            - { name: PROJECTS_PATH_TYPE,  value: local }
+            - { name: PROJECTS_PATH,       value: /app/app/projects/ }
+            - { name: PRIVATE_PATH_TYPE,   value: local }
+            - { name: PRIVATE_PATH,        value: /app/app/projects/ }
+          envFrom:
+            # JWT_SECRET (the app deliberately exits(1) without it), DB_URI
+            - secretRef: { name: li-tatool }
+          # Readiness gates on the database, so a rolling update never cuts over
+          # to a pod that would serve 200s with a dead DB (see note 3 above).
+          # Liveness deliberately does NOT check the database: a Mongo outage
+          # takes the pod out of the Service and it recovers on its own once
+          # Mongo returns, rather than being killed into a restart loop.
+          readinessProbe:
+            httpGet: { path: /readyz, port: 3000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 3000 }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          # The app has no SIGTERM handler and exits immediately, dropping
+          # in-flight requests. This gives the ingress time to deregister the
+          # endpoint before the process dies.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              # Watch this on first real use: data export builds ZIP archives
+              # in-process via archiver.
+              memory: 1Gi
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        # Mandatory — the container is non-root and its primary gid is nogroup,
+        # so without fsGroup every write to the volume fails with EACCES.
+        fsGroup: 1001
+
+      imagePullSecrets:
+        - name: gitlab-registry-token
+        - name: harbor-registry-token
+
+      volumes:
+        - name: li-tatool-pvc
+          persistentVolumeClaim:
+            claimName: li-tatool-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: li-tatool-pvc
+  namespace: li
+  labels:
+    app: li-tatool
+spec:
+  storageClassName: trident-csi
+  accessModes:
+    - ReadWriteMany
+  resources:
+    # 57 MB seeded batteries + researcher uploads + one small CSV per
+    # participant per session.
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: li-tatool-svc
+  namespace: li
+spec:
+  type: ClusterIP
+  selector:
+    app: li-tatool
+  ports:
+    - name: li-tatool-port
+      port: 80
+      protocol: TCP
+      # The app serves both the API and the static SPA on this one port.
+      targetPort: 3000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: li-tatool-ingress
+  namespace: li
+  annotations:
+    # The app caps request bodies at 1 MB itself (bodyParser), so raising this
+    # alone would not help.
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: tatool.vlab.ethz.ch
+      http:
+        paths:
+          - pathType: Prefix
+            path: "/"
+            backend:
+              service:
+                name: li-tatool-svc
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - tatool.vlab.ethz.ch
+      secretName: cert-vlab.ethz.ch
