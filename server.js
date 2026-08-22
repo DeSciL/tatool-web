@@ -283,6 +283,37 @@ function setup() {
 }
 
 // start server
-app.listen(app.get('port'), function() {
+var server = app.listen(app.get('port'), function() {
   console.log('You can now access tatool on ' + os.hostname() + ':' + app.get('port'));
 });
+
+/*******************************
+  GRACEFUL SHUTDOWN
+/*******************************/
+// Without this, node's default SIGTERM handling kills the process instantly: in-flight requests are
+// cut and the Mongo connection is never closed. Kubernetes sends SIGTERM on every rollout, so that
+// happened on each deploy. Relies on node being PID 1 (see the Dockerfile CMD).
+var shuttingDown = false;
+
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log('Received ' + signal + ', shutting down.');
+
+  // Stop accepting connections, then let in-flight requests finish.
+  server.close(function() {
+    mongoose.connection.close(false, function() {
+      console.log('Shutdown complete.');
+      process.exit(0);
+    });
+  });
+
+  // Backstop: a hung keep-alive connection must not outlast the pod's termination grace period.
+  setTimeout(function() {
+    console.warn('Shutdown timed out after 10s, exiting.');
+    process.exit(0);
+  }, 10000).unref();
+}
+
+process.on('SIGTERM', function() { shutdown('SIGTERM'); });
+process.on('SIGINT', function() { shutdown('SIGINT'); });

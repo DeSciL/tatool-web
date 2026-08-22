@@ -68,5 +68,13 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
   CMD node -e "require('http').get('http://localhost:3000/healthz', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
 
-# Start the application
-CMD ["npm", "start"]
+# Start node directly rather than via `npm start`, so node is PID 1.
+#
+# With npm as PID 1, SIGTERM reached npm, npm forwarded it, node died of the signal, and npm then
+# reported its child's signal death as a failure - emitting "npm error signal SIGTERM" on stderr and
+# exiting non-zero on every single rollout. Log collection tagged that as error level, so the only
+# signal this workload reliably produced was a false-positive error per restart. Shutdown timing was
+# never the problem; the exit code and the noise were.
+#
+# Being PID 1 is also what makes the SIGTERM handler in server.js behave predictably.
+CMD ["node", "server.js", "server", "prod"]
