@@ -26,30 +26,42 @@ RUN npm run build
 # Stage 2: Production
 FROM node:${NODE_VERSION}-alpine
 
+# Create the runtime user before any COPY, so that COPY --chown can resolve it below.
+#
+# This used to be a trailing `chown -R nodejs:nodejs /app`, which rewrote the ownership of every
+# file it touched and therefore duplicated all of them into a new layer - 246 MB of the image was
+# a second copy of node_modules and the task batteries. Setting ownership at copy time costs
+# nothing.
+# -G nodejs is load-bearing: without it the user's primary group defaults to nogroup (65533), which
+# does not match COPY --chown or the manifest's runAsGroup: 1001.
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S -G nodejs -u 1001 nodejs
+
 WORKDIR /app
 
 # Copy package files
 COPY package*.json ./
 
-# Install only production dependencies
+# Install only production dependencies. Left root-owned on purpose: node_modules is only ever read
+# at runtime, so the runtime user does not need to own it.
 RUN npm ci --omit=dev
 
 # Copy built application from builder stage
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/app ./app
-COPY --from=builder /app/controllers ./controllers
-COPY --from=builder /app/models ./models
-COPY --from=builder /app/views ./views
-COPY --from=builder /app/server.js ./server.js
-COPY --from=builder /app/projects.json ./projects.json
+COPY --chown=nodejs:nodejs --from=builder /app/dist ./dist
+COPY --chown=nodejs:nodejs --from=builder /app/app ./app
+COPY --chown=nodejs:nodejs --from=builder /app/controllers ./controllers
+COPY --chown=nodejs:nodejs --from=builder /app/models ./models
+COPY --chown=nodejs:nodejs --from=builder /app/views ./views
+COPY --chown=nodejs:nodejs --from=builder /app/server.js ./server.js
+COPY --chown=nodejs:nodejs --from=builder /app/projects.json ./projects.json
 # Needed to provision the initial accounts in-cluster (kubectl exec / a one-shot Job),
 # since self-registration is disabled.
-COPY --from=builder /app/seed-users.js ./seed-users.js
+COPY --chown=nodejs:nodejs --from=builder /app/seed-users.js ./seed-users.js
 
-# Create a non-root user
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001 && \
-    chown -R nodejs:nodejs /app
+# Participant CSVs are written to the relative path uploads/<mode>/<moduleId>/, so this must exist
+# and be writable by the runtime user. In Kubernetes it is a mounted volume and this is redundant,
+# but plain `docker run` without a volume depends on it.
+RUN mkdir -p uploads && chown nodejs:nodejs uploads
 
 USER nodejs
 
