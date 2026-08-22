@@ -26,7 +26,8 @@
       <input tabindex="5" type="submit"  name="login" value="Register" />
   </form>
 
-  <br><a ui-sref="login">Login</a> | <a ui-sref="reset" ui-sref-opts="{location: false}">Forgot password</a>
+  <!-- Forgot password hidden: no mail transport is configured, so reset would fail with a 500 -->
+  <br><a ui-sref="login">Login</a>
   <br><br>
 
   <div id="messagebox">
