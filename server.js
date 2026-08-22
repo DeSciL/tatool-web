@@ -96,6 +96,51 @@ var logCtrl = require('./controllers/logCtrl');
 if (app.get('env') === 'dev') {
   app.use(logger('dev'));
   mongoose.set('debug', true);
+} else {
+  // Production request logging. Previously there was none at all outside 'dev', so a deployed
+  // instance emitted nothing but a startup banner - there was no way to follow a rollout or see
+  // what a failing request actually did.
+  //
+  // Two things are deliberate here:
+  //
+  //  1. req.path, NOT the full URL. Participant identifiers travel in the query string
+  //     (/#!/public/<moduleId>?extid=<code>), and those identify a student. Logging originalUrl
+  //     would put them in the log store indefinitely. moduleId is in the path and is not personal.
+  //     Client IPs are likewise absent: 'combined' would log them, and behind the ingress they only
+  //     become real client addresses once 'trust proxy' is set - so enabling both together would
+  //     silently start collecting participant IPs.
+  //  2. A "level" field derived from the status code. Log collection infers severity from the
+  //     stream and from content; without an explicit level, ordinary traffic and real failures look
+  //     alike, and anything on stderr gets treated as an error.
+  // originalUrl, not req.path: Express strips the mount prefix from req.url inside a mounted
+  // router, and morgan logs on response finish, so req.path would report /register for a request to
+  // /api/register. originalUrl is never rewritten. Split on '?' to drop the query string.
+  function requestPath(req) {
+    return (req.originalUrl || req.url || '').split('?')[0];
+  }
+
+  logger.format('tatoolJson', function(tokens, req, res) {
+    var status = res.statusCode;
+    return JSON.stringify({
+      level: status >= 500 ? 'error' : (status >= 400 ? 'warn' : 'info'),
+      method: tokens.method(req, res),
+      path: requestPath(req),
+      status: status,
+      duration_ms: Number(tokens['response-time'](req, res)),
+      length: Number(tokens.res(req, res, 'content-length')) || 0
+    });
+  });
+
+  // LOG_FORMAT=combined for full Apache-style lines when debugging something specific. Note it
+  // includes the query string and remote address, i.e. the data point 1 above avoids.
+  app.use(logger(process.env.LOG_FORMAT || 'tatoolJson', {
+    // Probes run every 10-20s forever and would otherwise be nearly all of the log volume.
+    skip: function(req) {
+      var p = requestPath(req);
+      return p === '/healthz' || p === '/readyz';
+    }
+    // morgan writes to stdout by default. Keep it that way: stderr is interpreted as error level.
+  }));
 }
 app.use(cors());
 app.use(compress());
