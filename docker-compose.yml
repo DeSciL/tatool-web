@@ -1,12 +1,30 @@
-version: '3.8'
+# Local stack, kept deliberately close to the K8S deployment (namespace li, see k8s.md) so that
+# what works here has a good chance of working there. Mirrored: MongoDB image and digest, auth
+# enabled, NODE_ENV=production, the required JWT_SECRET, explicit PROJECTS_PATH/PRIVATE_PATH, and
+# both persistent write locations.
+#
+# Not mirrored, and worth knowing:
+#   - Production seeds /app/app/projects with an initContainer because a K8S PVC mounts empty over
+#     the image content. Docker Compose named volumes are auto-populated from the image on first
+#     creation, so that whole failure mode cannot reproduce here. Do not use this stack to validate
+#     the seeding logic.
+#   - Production terminates TLS at an ingress and does not set 'trust proxy'; here everything is
+#     plain HTTP on localhost.
 
 services:
   mongodb:
-    image: mongo:7.0
+    # Same image and digest as the cluster instance, so driver/server compatibility is tested for
+    # real. Mongoose 5.13.x is outside MongoDB's official support matrix for 8.x but works; pinning
+    # the digest means a silent server bump cannot change that under us.
+    image: docker.io/mongo:8.3.8@sha256:4e81cd5857d7a087db95c6c1c2d8fd9feddfef58d1bf5b754356d20f583744d1
     container_name: tatool-mongodb
     ports:
       - "27017:27017"
     environment:
+      # Auth is enabled in the cluster, so enable it here too - a missing authSource or a
+      # credential-less URI then fails locally instead of at deploy time.
+      - MONGO_INITDB_ROOT_USERNAME=tatool
+      - MONGO_INITDB_ROOT_PASSWORD=local-dev-only
       - MONGO_INITDB_DATABASE=tatool-web
     volumes:
       - mongodb_data:/data/db
@@ -15,7 +33,8 @@ services:
     networks:
       - tatool-network
     healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      test: ["CMD", "mongosh", "--quiet", "-u", "tatool", "-p", "local-dev-only",
+             "--authenticationDatabase", "admin", "--eval", "db.runCommand('ping').ok"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -25,27 +44,43 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Production builds pass the git tag with the leading 'v' stripped; /healthz reports it.
+        VERSION: local
+        # NODE_VERSION defaults to 26 in the Dockerfile, same as production. Override to 24 (the
+        # current Active LTS) to reproduce a fallback build.
+        # NODE_VERSION: 24
     container_name: tatool-web
     ports:
       - "3000:3000"
     environment:
       - NODE_ENV=production
       - PORT=3000
-      - DB_URI=mongodb://mongodb:27017/tatool-web
-      # Required: the server refuses to start in production without it. Local-only value.
+      # Credentials and authSource are required because Mongo runs with auth, exactly as in the
+      # cluster. In K8S the whole URI lives in a Secret.
+      - DB_URI=mongodb://tatool:local-dev-only@mongodb:27017/tatool-web?authSource=admin
+      # Required: with NODE_ENV=production the server exits rather than fall back to a known key.
       - JWT_SECRET=local-development-only-do-not-use-in-production
-      # Self-registration is off by default; it needs captcha + mail configured to be safe.
+      # Set explicitly rather than relying on defaults, matching the manifests. The trailing slash
+      # is mandatory - these are string-concatenated onto access/project names.
+      - PROJECTS_PATH_TYPE=local
+      - PROJECTS_PATH=/app/app/projects/
+      - PRIVATE_PATH_TYPE=local
+      - PRIVATE_PATH=/app/app/projects/
+      # Self-registration is off in production and stays off here. Turning it on also needs a
+      # working captcha and mail transport, or registration fails.
       # - REGISTRATION_ENABLED=true
-      # Uncomment and configure the following as needed:
-      # - PROJECTS_PATH_TYPE=local
-      # - PROJECTS_PATH=/app/app/projects/
-      # - PRIVATE_PATH_TYPE=local
-      # - PRIVATE_PATH=/app/app/projects/
-      # - RECAPTCHA_PRIVATE_KEY=your-recaptcha-key
-      # - EDITOR_USER=your-editor-user
+      # - RECAPTCHA_PRIVATE_KEY=
+      # - EDITOR_USER=
     volumes:
-      # Persist project data
-      - ./app/projects:/app/app/projects
+      # Both of the app's write locations, as in production. /app/uploads is the important one:
+      # collected participant CSVs go there (hardcoded relative path, not PRIVATE_PATH), so
+      # without it every restart loses the data.
+      - tatool_uploads:/app/uploads
+      - tatool_projects:/app/app/projects
+      # Alternative for authoring work: bind-mount the repo's projects directory instead of the
+      # named volume above, so files can be edited from the host. Diverges from production.
+      # - ./app/projects:/app/app/projects
     restart: unless-stopped
     networks:
       - tatool-network
@@ -57,6 +92,10 @@ volumes:
   mongodb_data:
     driver: local
   mongodb_config:
+    driver: local
+  tatool_uploads:
+    driver: local
+  tatool_projects:
     driver: local
 
 networks:
