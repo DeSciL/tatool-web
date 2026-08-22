@@ -142,7 +142,22 @@ if (app.get('env') === 'dev') {
     // morgan writes to stdout by default. Keep it that way: stderr is interpreted as error level.
   }));
 }
-app.use(cors());
+// CORS was previously wide open (`cors()` → Access-Control-Allow-Origin: *), which let any site
+// call the unauthenticated endpoints and read the responses — including /public/login, which mints
+// participant records.
+//
+// Default is now deny: the SPA is served from the same origin as the API and the module runs in a
+// same-origin iframe, so nothing needs cross-origin access. Same-origin requests are unaffected —
+// browsers do not require the header for those. Verified that no cross-origin caller exists: the
+// MTurk snippet in mturk/ builds a navigation link, not an XHR.
+//
+// Set CORS_ORIGIN (comma-separated) from the manifest if a caller ever does need it. Deliberately
+// not defaulting to our own hostname: this is a public fork, and the app should not have a
+// deployment's URL compiled into it.
+var corsOrigin = process.env.CORS_ORIGIN;
+app.use(cors({
+  origin: corsOrigin ? corsOrigin.split(',').map(function(o) { return o.trim(); }) : false
+}));
 app.use(compress());
 
 /*******************************
