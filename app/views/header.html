@@ -32,7 +32,8 @@
 
                         <ul class="nav navbar-nav navbar-right">
                             <li ui-sref-active="active"><a ui-sref="doc"><i class="fa fa-book"></i> Docs</a></li>
-                            <li ui-sref-active="active" ng-if="getMode()!=='lab'" ng-cloak><a ui-sref="register"><i class="fa fa-pencil-square-o"></i> Register</a></li>
+                            <!-- Register hidden: self-registration is disabled on this instance (REGISTRATION_ENABLED), accounts are provisioned with seed-users.js -->
+                            <!-- <li ui-sref-active="active" ng-if="getMode()!=='lab'" ng-cloak><a ui-sref="register"><i class="fa fa-pencil-square-o"></i> Register</a></li> -->
                         </ul>
                     </div>
 
