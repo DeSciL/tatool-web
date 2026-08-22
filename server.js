@@ -58,6 +58,20 @@ mongoose.connect(process.env.DB_URI || 'mongodb://127.0.0.1/tatool-web', {
   useUnifiedTopology: true,
   useFindAndModify: false,
   useCreateIndex: true
+}).catch(function(err) {
+  // The connection is retried in the background, so this is not fatal. Log it: an unreachable
+  // database otherwise produces one obscure line at startup and then requests that just hang.
+  console.error('MongoDB initial connection failed: ' + err.message);
+});
+
+mongoose.connection.on('connected', function() {
+  console.log('MongoDB connected.');
+});
+mongoose.connection.on('disconnected', function() {
+  console.warn('MongoDB disconnected.');
+});
+mongoose.connection.on('error', function(err) {
+  console.error('MongoDB connection error: ' + err.message);
 });
 
 /*******************************
@@ -83,6 +97,32 @@ if (app.get('env') === 'dev') {
 }
 app.use(cors());
 app.use(compress());
+
+/*******************************
+  HEALTH ENDPOINTS (Kubernetes probes)
+/*******************************/
+// Registered before everything else so they answer even if the API or static handlers misbehave,
+// and deliberately not behind the JWT router.
+//
+// Do NOT point probes at '/': express.static serves the SPA and returns 200 even when MongoDB is
+// unreachable, so a probe on '/' reports a broken pod as healthy and traffic gets routed to it.
+var MONGO_STATES = ['disconnected', 'connected', 'connecting', 'disconnecting'];
+
+// Liveness: the process is running and the event loop is responsive. No dependency checks, so a
+// transient database outage does not cause a restart loop.
+app.get('/healthz', function(req, res) {
+  res.status(200).json({ status: 'ok' });
+});
+
+// Readiness: the pod can actually serve requests, i.e. the database is connected. Returns 503
+// otherwise so Kubernetes takes it out of the Service endpoints instead of sending traffic to it.
+app.get('/readyz', function(req, res) {
+  var state = mongoose.connection.readyState;
+  res.status(state === 1 ? 200 : 503).json({
+    status: state === 1 ? 'ready' : 'not ready',
+    db: MONGO_STATES[state] || 'unknown'
+  });
+});
 
 // parse json and urlencoded body
 app.use(bodyParser.json({
