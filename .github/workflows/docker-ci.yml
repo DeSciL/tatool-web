@@ -1,0 +1,66 @@
+name: Docker CI
+
+on:
+  push:
+    tags:
+      - "*"
+
+  workflow_dispatch:
+
+env:
+  HARBOR: ${{ secrets.HARBOR_REGISTRY_URL }}
+  PROJECT: li
+  LABEL: tatool
+
+jobs:
+  build:
+    runs-on: descil-runners
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG_NAME="${{ github.ref_name }}"
+          VERSION="${TAG_NAME#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
+
+      - name: Build the Docker image
+        run: |
+          docker build . \
+            --file Dockerfile \
+            --tag local-image:${{steps.version.outputs.tag}} \
+            --build-arg VERSION=${{steps.version.outputs.version}} \
+            --provenance=false \
+            --build-arg http_proxy="http://proxy.ethz.ch:3128" \
+            --build-arg https_proxy="http://proxy.ethz.ch:3128" \
+            --label org.opencontainers.image.source=https://github.com/DeSciL/tatool-web \
+            --label org.opencontainers.image.description="Tatool Web Container" \
+            --label org.opencontainers.image.licenses=GPL-3.0
+
+      - name: Login to Harbor
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ secrets.HARBOR_REGISTRY_URL }}
+          username: ${{ secrets.HARBOR_REGISTRY_USER }}
+          password: ${{ secrets.HARBOR_REGISTRY_PASSWORD }}
+
+      - name: Tag and push to Harbor (versioned)
+        run: |
+          docker tag local-image:${{steps.version.outputs.tag}} $HARBOR/$PROJECT/$LABEL:${{steps.version.outputs.tag}}
+          docker push $HARBOR/$PROJECT/$LABEL:${{steps.version.outputs.tag}}
+
+      - name: Tag and push to Harbor (latest)
+        run: |
+          docker tag local-image:${{steps.version.outputs.tag}} $HARBOR/$PROJECT/$LABEL:latest
+          docker push $HARBOR/$PROJECT/$LABEL:latest
+
+      - name: Sign Harbor image with Cosign
+        run: |
+          DIGEST=$(docker buildx imagetools inspect $HARBOR/$PROJECT/$LABEL:${{steps.version.outputs.tag}} --format '{{json .Manifest.Digest}}' | jq -r .)
+          cosign sign --yes $HARBOR/$PROJECT/$LABEL@$DIGEST
