@@ -79,7 +79,7 @@ spec:
         # edits. Quoting matters — several batteries have spaces in their names.
         - name: seed-projects
           # Same tag as the app container.
-          image: <REGISTRY>/li/tatool:v0.0.4
+          image: <REGISTRY>/li/tatool:latest
           imagePullPolicy: IfNotPresent
           command: ["/bin/sh", "-c"]
           args:
@@ -97,7 +97,7 @@ spec:
 
       containers:
         - name: li-tatool-container
-          image: <REGISTRY>/li/tatool:v0.0.4
+          image: <REGISTRY>/li/tatool:latest
           # Immutable version tags: pull only when the tag actually changes.
           imagePullPolicy: IfNotPresent
           volumeMounts:
@@ -131,9 +131,9 @@ spec:
             httpGet: { path: /healthz, port: 3000 }
             initialDelaySeconds: 20
             periodSeconds: 20
-          # The app has no SIGTERM handler and exits immediately, dropping
-          # in-flight requests. This gives the ingress time to deregister the
-          # endpoint before the process dies.
+          # Keep this even though the app now drains gracefully on SIGTERM: it
+          # gives the ingress time to deregister the endpoint before the drain
+          # starts, so no new requests arrive during shutdown.
           lifecycle:
             preStop:
               exec:
@@ -152,8 +152,10 @@ spec:
         runAsNonRoot: true
         runAsUser: 1001
         runAsGroup: 1001
-        # Mandatory — the container is non-root and its primary gid is nogroup,
-        # so without fsGroup every write to the volume fails with EACCES.
+        # Mandatory. A freshly provisioned PVC is owned root:root, so a non-root
+        # process cannot write to it; fsGroup is what makes the volume
+        # group-owned by 1001. Still required even though the image's runtime
+        # user now has 1001 as its primary group.
         fsGroup: 1001
 
       imagePullSecrets:
