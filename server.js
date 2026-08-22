@@ -131,13 +131,28 @@ if (app.get('env') === 'dev') {
     });
   });
 
+  // Successful static fetches are pure volume, from two separate sources:
+  //   - the SPA bundle under express.static(dist) - /scripts/, /styles/, /images/ - about 16 lines
+  //     on every page load;
+  //   - task stimuli via the three /{user,public,developer}/resources/ routes, which is the real
+  //     driver: one participant completing a battery pulls hundreds of images, sounds and
+  //     instruction files through there.
+  //
+  // Failures are deliberately kept. A 404 on a stimulus is exactly what you need to see when a task
+  // will not run, and a 404 on a bundle asset means a broken build or a bad deploy.
+  //
+  // /favicon.ico is listed defensively only: serve-favicon is registered above this middleware, so
+  // those requests never reach the logger today.
+  var STATIC_RE = /^\/(scripts|styles|images|fonts)\/|^\/favicon\.ico$|^\/(user|public|developer)\/resources\//;
+
   // LOG_FORMAT=combined for full Apache-style lines when debugging something specific. Note it
   // includes the query string and remote address, i.e. the data point 1 above avoids.
   app.use(logger(process.env.LOG_FORMAT || 'tatoolJson', {
-    // Probes run every 10-20s forever and would otherwise be nearly all of the log volume.
-    skip: function(req) {
+    skip: function(req, res) {
       var p = requestPath(req);
-      return p === '/healthz' || p === '/readyz';
+      // Probes run every 10-20s forever and would otherwise be nearly all of the log volume.
+      if (p === '/healthz' || p === '/readyz') return true;
+      return res.statusCode < 400 && STATIC_RE.test(p);
     }
     // morgan writes to stdout by default. Keep it that way: stderr is interpreted as error level.
   }));
