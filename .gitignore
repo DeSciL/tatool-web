@@ -9,4 +9,5 @@ uploads
 .envprod
 app/projects/private/*
 app/projects/public/myExperiment/*
-package-lock.json
+# package-lock.json is intentionally committed: tagged builds are what gets deployed, so the
+# dependency tree has to be reproducible. Do not re-ignore it.

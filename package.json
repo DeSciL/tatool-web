@@ -8,7 +8,7 @@
         "url": "http://github.com/tatool/tatool-web.git"
     },
     "engines": {
-        "node": "20.x.x"
+        "node": ">=20"
     },
     "main": "server.js",
     "scripts": {
@@ -54,7 +54,7 @@
         "lz-string": "1.4.4",
         "mkdirp": "0.5.5",
         "moment": "2.29.4",
-        "mongoose": "5.13.20",
+        "mongoose": "5.13.23",
         "morgan": "1.10.0",
         "nodemailer": "6.9.8",
         "npm": "6.14.8",
@@ -70,12 +70,12 @@
         "scriptjs": "2.5.9",
         "serve-favicon": "2.5.0",
         "sha1": "1.1.1",
+        "showdown": "1.9.1",
         "spin.js": "4.1.0",
         "survey-jquery": "1.9.6",
         "ui-select": "0.19.8",
         "uuid": "8.3.0",
-        "video.js": "7.20.2",
-        "showdown": "1.9.1"
+        "video.js": "7.20.2"
     },
     "devDependencies": {
         "@babel/core": "7.18.10",

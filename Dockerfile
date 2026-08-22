@@ -1,15 +1,21 @@
 # Multi-stage build for tatool-web
 
+# Node 26 is the 'current' line; it becomes Active LTS in October 2026. Until then, fall back with
+# a single flag if anything misbehaves: docker build --build-arg NODE_VERSION=24 .
+# (24 is today's Active LTS, i.e. what node:lts resolves to.)
+ARG NODE_VERSION=26
+
 # Stage 1: Build
-FROM node:20-alpine AS builder
+FROM node:${NODE_VERSION}-alpine AS builder
 
 WORKDIR /app
 
 # Copy package files
 COPY package*.json ./
 
-# Install all dependencies (including devDependencies for build)
-RUN npm install
+# Install all dependencies (including devDependencies for build).
+# npm ci installs exactly what package-lock.json pins, so a rebuild of a given tag is reproducible.
+RUN npm ci
 
 # Copy source code
 COPY . .
@@ -18,7 +24,7 @@ COPY . .
 RUN npm run build
 
 # Stage 2: Production
-FROM node:20-alpine
+FROM node:${NODE_VERSION}-alpine
 
 WORKDIR /app
 
@@ -26,7 +32,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install only production dependencies
-RUN npm install --omit=dev
+RUN npm ci --omit=dev
 
 # Copy built application from builder stage
 COPY --from=builder /app/dist ./dist
