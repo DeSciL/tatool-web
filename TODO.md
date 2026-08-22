@@ -35,24 +35,40 @@ Passwords are generated and printed once. `:admin` grants the admin role; the de
 
 ## P1 — deploy path
 
-| # | Task | Est. |
+| # | Task | Status |
 |---|---|---|
-| 6 | Commit `package-lock.json` (`npm install --package-lock-only`) | 2 min |
-| 7 | Add standard `docker-ci.yml`, delete the two GAE workflows, push a tag | 15 min |
-| 8 | Manifests in DescilK8S `li`: 1 replica, Trident PVC + seeding initContainer + `fsGroup: 1001`, `JWT_SECRET`/`DB_URI` secrets, `tcpSocket` probe | 30 min |
-| 9 | Smoke test: log in as a seeded user, author a module, open the `?extid=` student URL | 10 min |
+| 6 | Commit `package-lock.json`, switch Dockerfile to `npm ci` | **DONE** — `.gitignore` had been excluding it, which is why none existed |
+| 7 | Standard `docker-ci.yml`, delete the two GAE workflows | **DONE** — publishes `$HARBOR/li/tatool` |
+| 8 | Manifests in DescilK8S `li`: 1 replica, Trident PVC + seeding initContainer + `fsGroup: 1001`, `JWT_SECRET`/`DB_URI` secrets, `NODE_ENV=production`, `tcpSocket` probe | **TODO** (~30 min) |
+| 9 | Push a tag to produce the first image, then smoke test: log in as a seeded user, author a module, open the `?extid=` student URL | **TODO** (~15 min) |
 
-> With 1 hour available: P0 + #6 + #7 is realistically achievable. #8 and #9 will most likely spill
-> past the hour — plan for that rather than rushing the manifests.
+Also done alongside #6: base image parameterised as `ARG NODE_VERSION` (default **26**; fall back
+with `--build-arg NODE_VERSION=24`, today's Active LTS), `engines` relaxed to `>=20`, and mongoose
+patched 5.13.20 → 5.13.23. Verified on Node 26 + MongoDB 8.3.8: build, startup, seeding, bcrypt
+login, JWT, role enforcement, `?extid=` flow, `moduleType` guard, registration block.
 
 ## P2 — before golive (~2 weeks)
 
-10. `/healthz` + `/readyz` endpoints, then repoint the K8S probes at them (§5).
-11. `app.set('trust proxy', true)`, enable `morgan` in production, lock CORS to the hostname.
-12. Rate-limit `/public/login/:moduleId` — it creates a DB record per unseen `extid`.
-13. Slim the image: 1.28 GB → <300 MB (drop the `npm` runtime dep, `COPY --chown`, narrow `app/`).
+10. **Drop `"npm": "6.14.8"` from `dependencies`** ([package.json](package.json)) — one line that
+    removes **49 of the 87** production advisories (they are reachable only through this bundled
+    npm) and ~470 MB. Nothing at runtime needs it; `npm start` uses the base image's npm. Highest
+    value-per-minute item left.
+11. **Upgrade mongoose 5.13.23 → 6.13.11.** Three advisories have **no fix in the 5.x line**,
+    including a **critical** search injection (`GHSA-vg7j-7cwx-8wgw`, needs ≥6.13.6) and a `$nor`
+    `sanitizeFilter` NoSQL injection (≥6.13.9). Mongoose 6 is the right target because it **still
+    supports callbacks**, so the 114 callback-style call sites survive. Work: remove the four
+    removed connect options (`useNewUrlParser` / `useUnifiedTopology` / `useFindAndModify` /
+    `useCreateIndex`) from [server.js](server.js), [seed-users.js](seed-users.js) and
+    [seed-sample-module.js](seed-sample-module.js), then check `strictQuery` and
+    `findByIdAndUpdate` default changes. Do **not** jump to 8 or 9 — mongoose 7 removed callbacks
+    outright, which turns this into a 114-site rewrite across 11 files.
+12. `/healthz` + `/readyz` endpoints, then repoint the K8S probes at them (§5).
+13. `app.set('trust proxy', true)`, enable `morgan` in production, lock CORS to the hostname.
+14. Rate-limit `/public/login/:moduleId` — it creates a DB record per unseen `extid`.
+15. Slim the image further: `COPY --chown` instead of `chown -R` (saves 286 MB), narrow the `app/`
+    copy (64 MB). With #10 this gets 1.11 GB down to roughly 250 MB.
 
-**Deferred beyond golive:** captcha (§6), email delivery (§7), Mongoose upgrade, Postgres.
+**Deferred beyond golive:** captcha (§6), email delivery (§7), mongoose 8/9, Postgres.
 
 ---
 
