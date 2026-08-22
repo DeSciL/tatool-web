@@ -23,6 +23,16 @@ app.set('env', process.env.NODE_ENV || process.argv[3] || 'prod');
 // Set from the image build arg (see Dockerfile); 'dev' when running outside a built image.
 app.set('app_version', process.env.APP_VERSION || 'dev');
 
+// Number of reverse proxies in front of us. Needed for req.ip to be the actual client rather than
+// the ingress, and it also makes req.protocol report https so any absolute URL the app builds is
+// correct.
+//
+// Deliberately a hop COUNT, not `true`. With `true`, Express takes the left-most entry of
+// X-Forwarded-For, which the client controls — anyone can set that header and forge the logged
+// address. A count of 1 means "trust one hop", so req.ip is the address our own ingress observed.
+// Raise TRUST_PROXY if another proxy or load balancer is added in front of the ingress.
+app.set('trust proxy', Number(process.env.TRUST_PROXY || 1));
+
 // A missing JWT_SECRET used to fall back silently to the literal 'secret', which makes every
 // token (including admin tokens) forgeable by anyone who reads this file. Refuse to start in
 // production rather than come up insecure; warn elsewhere so local runs still work.
@@ -97,37 +107,42 @@ if (app.get('env') === 'dev') {
   app.use(logger('dev'));
   mongoose.set('debug', true);
 } else {
-  // Production request logging. Previously there was none at all outside 'dev', so a deployed
-  // instance emitted nothing but a startup banner - there was no way to follow a rollout or see
-  // what a failing request actually did.
+  // Production request logging. One JSON line per request on stdout.
   //
-  // Two things are deliberate here:
-  //
-  //  1. req.path, NOT the full URL. Participant identifiers travel in the query string
-  //     (/#!/public/<moduleId>?extid=<code>), and those identify a student. Logging originalUrl
-  //     would put them in the log store indefinitely. moduleId is in the path and is not personal.
-  //     Client IPs are likewise absent: 'combined' would log them, and behind the ingress they only
-  //     become real client addresses once 'trust proxy' is set - so enabling both together would
-  //     silently start collecting participant IPs.
-  //  2. A "level" field derived from the status code. Log collection infers severity from the
-  //     stream and from content; without an explicit level, ordinary traffic and real failures look
-  //     alike, and anything on stderr gets treated as an error.
+  //  - "level" is derived from the status code. Log collection infers severity from the stream and
+  //    from content; without an explicit level, ordinary traffic and real failures look alike, and
+  //    anything on stderr gets treated as an error.
+  //  - "extid" is the study's participant identifier, a pseudonymous key, and is logged on purpose
+  //    so a participant's session can be followed. It is read as a named field rather than by
+  //    logging the whole query string, so a future query parameter cannot leak in unnoticed.
+  //  - "code" is Tatool's own participant number. It is the join key in the CSV exports, so having
+  //    it here is what ties a log line to collected data.
+  //  - "ip" is the real client address, which requires the 'trust proxy' hop count set above.
+
   // originalUrl, not req.path: Express strips the mount prefix from req.url inside a mounted
   // router, and morgan logs on response finish, so req.path would report /register for a request to
-  // /api/register. originalUrl is never rewritten. Split on '?' to drop the query string.
+  // /api/register. originalUrl is never rewritten. Split on '?' to drop the query string, which is
+  // reported field-by-field instead.
   function requestPath(req) {
     return (req.originalUrl || req.url || '').split('?')[0];
   }
 
   logger.format('tatoolJson', function(tokens, req, res) {
     var status = res.statusCode;
+    // req.auth is populated by expressjwt before this runs (morgan formats on response finish), so
+    // authenticated participant requests carry the identifiers even without a query string.
+    var auth = req.auth || {};
     return JSON.stringify({
       level: status >= 500 ? 'error' : (status >= 400 ? 'warn' : 'info'),
       method: tokens.method(req, res),
       path: requestPath(req),
       status: status,
       duration_ms: Number(tokens['response-time'](req, res)),
-      length: Number(tokens.res(req, res, 'content-length')) || 0
+      length: Number(tokens.res(req, res, 'content-length')) || 0,
+      // JSON.stringify drops undefined keys, so these are absent rather than null when unknown.
+      extid: req.query.extid || auth.extid || undefined,
+      code: auth.code || undefined,
+      ip: req.ip || undefined
     });
   });
 
