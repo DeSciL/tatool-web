@@ -20,6 +20,8 @@ app.use(favicon(path.join(__dirname, 'dist/images/favicon.ico')));
 *******************************/
 app.set('port', process.env.PORT || 3000);
 app.set('env', process.env.NODE_ENV || process.argv[3] || 'prod');
+// Set from the image build arg (see Dockerfile); 'dev' when running outside a built image.
+app.set('app_version', process.env.APP_VERSION || 'dev');
 
 // A missing JWT_SECRET used to fall back silently to the literal 'secret', which makes every
 // token (including admin tokens) forgeable by anyone who reads this file. Refuse to start in
@@ -109,9 +111,10 @@ app.use(compress());
 var MONGO_STATES = ['disconnected', 'connected', 'connecting', 'disconnecting'];
 
 // Liveness: the process is running and the event loop is responsive. No dependency checks, so a
-// transient database outage does not cause a restart loop.
+// transient database outage does not cause a restart loop. Reports the build version so the
+// deployed tag can be confirmed with a single request.
 app.get('/healthz', function(req, res) {
-  res.status(200).json({ status: 'ok' });
+  res.status(200).json({ status: 'ok', version: app.get('app_version') });
 });
 
 // Readiness: the pod can actually serve requests, i.e. the database is connected. Returns 503
@@ -120,7 +123,8 @@ app.get('/readyz', function(req, res) {
   var state = mongoose.connection.readyState;
   res.status(state === 1 ? 200 : 503).json({
     status: state === 1 ? 'ready' : 'not ready',
-    db: MONGO_STATES[state] || 'unknown'
+    db: MONGO_STATES[state] || 'unknown',
+    version: app.get('app_version')
   });
 });
 

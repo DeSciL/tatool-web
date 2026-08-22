@@ -53,12 +53,20 @@ RUN addgroup -g 1001 -S nodejs && \
 
 USER nodejs
 
+# Build version, surfaced at /healthz so the running version is verifiable from outside without
+# cluster access. docker-ci.yml already passes --build-arg VERSION=<tag>. Declared this late so it
+# does not invalidate the dependency layers above.
+ARG VERSION=dev
+ENV APP_VERSION=${VERSION}
+
 # Expose the application port
 EXPOSE 3000
 
-# Health check
+# Health check. Note this probes '/', which returns 200 even when the database is unreachable, so
+# it is not a real readiness signal - it only exists for plain `docker run`. Kubernetes ignores
+# Docker healthchecks; the manifests use /healthz and /readyz instead.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3000', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
+  CMD node -e "require('http').get('http://localhost:3000/healthz', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
 
 # Start the application
 CMD ["npm", "start"]
