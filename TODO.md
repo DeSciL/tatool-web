@@ -13,16 +13,14 @@ need a new tag plus an image bump in `DescilK8S`.
 1. **Mongoose 5.13.23 → 6.13.11.** Clears a critical search injection (`GHSA-vg7j-7cwx-8wgw`) and a
    `$nor` NoSQL injection, neither fixable in 5.x. Work: drop the four removed connect options
    (`useNewUrlParser`, `useUnifiedTopology`, `useFindAndModify`, `useCreateIndex`) from
-   [server.js](server.js), [seed-users.js](seed-users.js), [seed-sample-module.js](seed-sample-module.js);
+   [server.js](server.js), [tatool-users.js](tatool-users.js), [seed-sample-module.js](seed-sample-module.js);
    check `strictQuery` and `findByIdAndUpdate` default changes.
    ⚠ **Not 7+** — callbacks were removed there, and this codebase has 114 callback-style call sites
    across 11 files.
 
-2. **Import the shipped module definitions.** A fresh database has no modules, so the Modules page is
-   empty. 41 definitions under `app/projects/*/modules/*.json` match `moduleDefinition` directly; a
-   script in the shape of [seed-sample-module.js](seed-sample-module.js) can import them. Check what
-   `developerCtrl.publish` generates beyond the definition — a `sessionToken` is needed for resource
-   fetching.
+2. **`doctor` cannot be a CI gate while known upstream breakage is unfixed.** It exits 1 on the three
+   `de_response_01_*` findings below, so a permanent red masks genuinely new problems. Add a small
+   known-issues allowlist (accepted findings, by check + resource) so a fresh typo still stands out.
 
 3. **Decide on password recovery.** Register and "Forgot password" links are hidden, so an admin must
    reset via `POST /api/admin/users/:user/reset`. Needs a mail transport to change.
@@ -40,6 +38,29 @@ need a new tag plus an image bump in `DescilK8S`.
 
 ---
 
+## Known upstream issues — deliberately not fixed
+
+**Three `uzh-shifting-battery` instruction files have a stray space before the extension.** Found by
+`tatool-shell.js doctor` on its first run:
+
+```
+on disk:              de_response_01_01 .htm    de_response_01_02 .htm    de_response_01_04 .htm
+module references:    de_response_01_01.htm     de_response_01_02.htm     de_response_01_04.htm
+```
+
+`_03` and `_05` are fine, so it is a typo in three filenames, not a convention. The module
+`Shifting: Response` therefore 404s three instruction pages mid-task.
+
+**Decision:** leave the files as upstream has them, to keep the fork clean and merges trivial.
+Instead, `Shifting: Response` is **unpublished** on the deployed instance — it stays in the Editor but
+is out of the repository, so no participant can start it. If upstream ever fixes the names, republish
+with `tatool-shell.js publish shifting_response`.
+
+Consequence: `doctor` reports three permanent `resource-missing` errors and exits 1. See Outstanding
+item 2.
+
+---
+
 ## Standing facts
 
 **Fork discipline.** `master` mirrors `upstream/master` untouched; all work on `descil`; pull upstream
@@ -51,7 +72,7 @@ and reuses a temp user per `(extid, moduleId)` — no login, registration, captc
 unauthenticated, so it is not verified identity.
 
 **Registration is off** (`REGISTRATION_ENABLED`), and must stay off until captcha and mail both work.
-Accounts come from [seed-users.js](seed-users.js).
+Accounts come from [tatool-users.js](tatool-users.js).
 
 **Captcha would need three fixes**, if ever re-enabled: it is commented out in
 [register.html](app/views/auth/register.html) and

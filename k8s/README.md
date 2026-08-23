@@ -103,7 +103,7 @@ data-protection scope and needs a retention limit.
 Self-registration is disabled, so a fresh instance has no users:
 
 ```
-kubectl -n li exec deploy/li-tatool -- node seed-users.js user@ethz.ch admin@ethz.ch:admin
+kubectl -n li exec deploy/li-tatool -- node tatool-users.js user@ethz.ch admin@ethz.ch:admin
 ```
 
 Passwords are generated and printed once — capture them. `:admin` grants the admin role; default is

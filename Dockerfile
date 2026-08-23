@@ -55,10 +55,10 @@ COPY --chown=nodejs:nodejs --from=builder /app/views ./views
 COPY --chown=nodejs:nodejs --from=builder /app/server.js ./server.js
 COPY --chown=nodejs:nodejs --from=builder /app/projects.json ./projects.json
 # Needed to provision the initial accounts in-cluster (kubectl exec / a one-shot Job),
-# since self-registration is disabled. seed-content.js does the same for projects and modules — a
-# fresh database shows nothing in the UI until it has run.
-COPY --chown=nodejs:nodejs --from=builder /app/seed-users.js ./seed-users.js
-COPY --chown=nodejs:nodejs --from=builder /app/seed-content.js ./seed-content.js
+# since self-registration is disabled. tatool-shell.js is the admin shell: projects, modules,
+# diagnostics and data. A fresh database shows nothing in the UI until it has run.
+COPY --chown=nodejs:nodejs --from=builder /app/tatool-users.js ./tatool-users.js
+COPY --chown=nodejs:nodejs --from=builder /app/tatool-shell.js ./tatool-shell.js
 
 # Participant CSVs are written to the relative path uploads/<mode>/<moduleId>/, so this must exist
 # and be writable by the runtime user. In Kubernetes it is a mounted volume and this is redundant,

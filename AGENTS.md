@@ -43,8 +43,8 @@ Everything below either supports those or keeps you from breaking the deployment
 | `app/views/` | HTML templates, `require`d into the bundle. `app/views/doc/` is the in-app documentation (94 pages). |
 | `app/projects/` | Task content on disk: stimuli, instructions, executables, module JSONs |
 | `k8s/` | Deployment brief + sanitised reference manifest |
-| `seed-users.js` | Provisions accounts (self-registration is disabled) |
-| `seed-content.js` | Registers projects, imports/publishes modules, exports definitions |
+| `tatool-users.js` | Provisions accounts (self-registration is disabled) |
+| `tatool-shell.js` | Admin shell: `doctor`, projects, modules, data, accounts. Interactive menu with a TTY, `--json` for scripting |
 
 Editing anything under `app/` requires a webpack rebuild before it takes effect — `dist/` is what is
 served.
@@ -57,7 +57,7 @@ Local stack, mirrors production (Mongo 8.3.8 with auth, both persistent volumes)
 
 ```
 docker compose up -d --build
-docker compose exec tatool-web node seed-users.js you@ethz.ch   # prints a generated password once
+docker compose exec tatool-web node tatool-users.js you@ethz.ch   # prints a generated password once
 curl localhost:3000/healthz   # {"status":"ok","version":"local"}
 curl localhost:3000/readyz    # {"status":"ready","db":"connected",...}
 ```
@@ -94,7 +94,7 @@ access/project names, so a missing slash silently yields `/app/app/projectspubli
 (`controllers/resourceCtrl.js`). `PRIVATE_PATH` is accepted and then ignored on the local code path.
 
 **Registration is disabled** (`REGISTRATION_ENABLED`) and must stay off — captcha is non-functional
-and no mail transport is configured. Accounts come from `seed-users.js`.
+and no mail transport is configured. Accounts come from `tatool-users.js`.
 
 **`JWT_SECRET` is mandatory** in production; the app exits 1 without it rather than fall back to a
 known key.
@@ -132,18 +132,35 @@ has all the task *files* but an empty Modules list. That is expected, not a seed
 5. Distribute the participant URL.
 6. Collect data via Analytics or the auto-upload exporter.
 
-### Bulk content management — `seed-content.js`
+### The admin shell — `tatool-shell.js`
 
 A fresh database shows nothing in the UI even though the task files are all on the volume, because
 projects and modules are database records. This script closes that gap and is the fast path for
 steps 1, 3 and 4 above:
 
 ```
-node seed-content.js status                                        # drift: disk vs database
-node seed-content.js projects                                      # register/refresh project records
-node seed-content.js modules --owner a@ethz.ch [--publish] [--only uzh-ef]
-node seed-content.js export <moduleLabel|moduleId> [out.json]      # back to importable JSON
+node tatool-shell.js                        # interactive menu (needs a TTY)
+node tatool-shell.js doctor [--json]        # find silent problems; exit 1 on errors
+node tatool-shell.js status                 # disk vs database
+node tatool-shell.js data [--export <mod>]  # collected data summary / tarball
+node tatool-shell.js accounts               # users, roles, what each owns
+node tatool-shell.js projects [--only <name>]
+node tatool-shell.js modules --owner a@ethz.ch [--publish] [--only uzh-ef]
+node tatool-shell.js publish-changes <mod>  # version bump + republish + analytics
+node tatool-shell.js repair-analytics
+node tatool-shell.js export <mod> [out.json]
 ```
+
+**`--json` works on every command** — parse that rather than scraping the text output.
+
+**Reach for `doctor` first.** It encodes the failure modes that are silent in this app: resource files
+that do not exist (the Editor's resource-name field is free text, so typos only surface when a
+participant hits the task), modules referencing a project missing from disk, published modules with no
+Analytics record, installed copies stale against the published version, modules with no auto-upload
+exporter, and `$$hashKey` artifacts. Exits 1 on errors, so it works as a post-deploy gate. On first
+run against the preview it found three `uzh-shifting-battery` instruction files whose names contain a
+stray space (`de_response_01_01 .htm`) while the module references them without it — an upstream bug
+that breaks `Shifting: Response` mid-task.
 
 Idempotent — re-running imports nothing new. It derives each project's executables descriptor from
 the properties its modules actually use, strips `$`-prefixed keys, coerces `moduleMaxSessions: ""`
@@ -151,7 +168,7 @@ to null, and **refuses to publish a module whose referenced project is missing f
 would be dead links for participants). It skips `tatool` and `tatool-stimuli`, which `initProjects`
 re-seeds from `projects.json` on every startup.
 
-In-cluster: `kubectl -n li exec deploy/li-tatool -- node seed-content.js status`
+In-cluster: `kubectl -n li exec deploy/li-tatool -- node tatool-shell.js status`
 
 ### Assets: external URLs are the intended path
 
@@ -181,7 +198,7 @@ Upstream's two intended paths:
 
 So route researchers to external hosting by default. Only HTML instruction pages require the volume,
 and image-based instructions avoid even that. After copying files onto the volume, run
-`seed-content.js projects` to register or refresh the project.
+`tatool-shell.js projects` to register or refresh the project.
 
 ### Module JSON
 
@@ -306,6 +323,100 @@ https://<host>/#!/public/<moduleId>?extid=<participant>&c=<condition>&forceuploa
   manipulation works**: same module, different `c`, different Elements execute. Assignment is
   external — Tatool does no randomisation or balancing itself.
 - `forceupload` — offers a manual upload button for incomplete sessions.
+
+---
+
+## Copying and modifying a module
+
+The common real request: *"we need a variant of task X with our own instructions/timings."* Every step
+below has a silent failure mode. Read the whole thing before starting.
+
+### Four copies of a module exist
+
+| Copy | Collection | Changed by |
+|---|---|---|
+| Developer | `developermodules` | Editor save, or `POST /api/developer/modules/:id` |
+| Repository (published) | `repositorymodules` | `publish` |
+| Installed | `usermodules` | **the user**, clicking Update |
+| `?extid=` participant | created per arrival | nothing — always current |
+
+Editing one does **not** touch the others. This is the single biggest source of "I changed it but I
+still see the old version": you were looking at an installed copy.
+
+Reassuringly, the last row means **participants arriving via `?extid=` always get the current
+version** — the module is installed fresh on each arrival. Only pre-existing installed copies go
+stale, i.e. researchers testing from MY MODULES.
+
+### Recipe
+
+1. **Copy the module.** Editor: Download the JSON, then Open to re-import (always creates a new
+   entry). Or via API: `POST /api/developer/modules/<new-uuid>` with a modified definition.
+   **Give the copy a distinct `moduleLabel`** — it becomes the `moduleId` column in the CSV export,
+   so reusing one merges your data with the original's.
+
+2. **Never edit a shared project's files.** `tatool`, `tatool-stimuli` and the batteries are upstream
+   files referenced by many modules; editing one changes every module using it and creates a merge
+   diff. Create an independent project for the variant:
+   ```
+   app/projects/public/<my-project>/{executables,instructions,stimuli,modules}
+   ```
+   Copy in only the files you actually change; leave the rest referenced from their original project.
+
+   ⚠ **Copy referenced images too.** `tatoolInstruction.service.js:57-58` rewrites relative
+   `<img src>` against *the page's own project* and its `instructions/` folder. Move an instruction
+   HTML without its images and they 404 with no error — the page just renders blank images.
+
+3. **Put the files on the volume.** There is no upload API:
+   ```
+   POD=$(kubectl -n li get pod -l app=li-tatool -o jsonpath='{.items[0].metadata.name}')
+   kubectl -n li exec $POD -c li-tatool-container -- mkdir -p /app/app/projects/public/<my-project>/instructions
+   kubectl -n li cp <file> $POD:/app/app/projects/public/<my-project>/instructions/<file> -c li-tatool-container
+   ```
+   Only the mounted volume paths are writable — `/app` itself is root-owned, so `kubectl cp` there
+   fails with `tar: can't open …: Permission denied`.
+
+4. **Register the project** so the Editor offers it and resources resolve:
+   ```
+   kubectl -n li exec deploy/li-tatool -- node tatool-shell.js projects
+   ```
+
+5. **Repoint the module's resource references** at the new project (`project.name`, `resourceName`).
+
+6. ⚠ **Increment `moduleVersion`, then republish.** The Update button only appears when
+   `installedVersion < repositoryVersion` (`app.module.ctrl.js:79`). `developerCtrl.update` takes the
+   version from the request body verbatim, so an API edit that echoes the old value leaves the
+   repository at the same version — no Update button, and every existing user silently keeps the old
+   definition forever. The Editor increments on save; API and DB edits must do it explicitly.
+
+7. **Create the Analytics record** unless you published through the Editor. `publish` does not call
+   `initAnalytics` — only `developerCtrl`'s *update* path does:
+   ```
+   kubectl -n li exec deploy/li-tatool -- node tatool-shell.js repair-analytics
+   ```
+
+8. **Commit the project folder** so a fresh instance gets it from the image. ⚠ The seeding
+   initContainer is no-clobber, so **a file already on the volume is never replaced by a newer
+   image** — for existing files, `kubectl cp` is the only way to update a running instance.
+
+### Redirecting out at the end
+
+Set **Redirect URL** in the Editor's General Settings (field name `moduleForwardUrl`). On completion
+Tatool exports the data, logs the temp user out, then redirects with `extid` and `sessiontoken`
+appended:
+
+```
+https://survey.example/form/SV_x?extid=<id>&sessiontoken=<token>
+```
+
+Must be an absolute URL — it goes through `new URL()`, and a malformed value throws so the redirect
+silently never fires. Existing query params on the target are preserved. Setting it *replaces* the
+end screen that would otherwise show the participant their session token. Public/`?extid=` flow only.
+
+### If editing via API or direct DB rather than the Editor
+
+- Strip `$`-prefixed keys (`$$hashKey`) or the insert fails with an empty 500.
+- Coerce `moduleMaxSessions: ""` to `null` — the schema field is a `Number`.
+- Send `moduleType: 'public'` on update if the module is published, or `update` clears it.
 
 ---
 

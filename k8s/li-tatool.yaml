@@ -34,7 +34,7 @@
 #
 # Self-registration is disabled by design, so a fresh instance has no users.
 # Provision them (passwords are printed once, capture them):
-#   kubectl -n li exec deploy/li-tatool -- node seed-users.js user@ethz.ch admin@ethz.ch:admin
+#   kubectl -n li exec deploy/li-tatool -- node tatool-users.js user@ethz.ch admin@ethz.ch:admin
 # Never bootstrap with `node server.js lab prod` — it creates the hardcoded,
 # publicly documented admin@tatool-web.com / 1234 on an internet-facing host.
 apiVersion: apps/v1

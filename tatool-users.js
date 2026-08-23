@@ -8,9 +8,9 @@
 // User pre('save') hook, so inserting via mongosh would store a plaintext password.
 //
 // Usage
-//   node seed-users.js alice@ethz.ch bob@ethz.ch:admin
-//   node seed-users.js users.json
-//   SEED_USERS='[{"email":"alice@ethz.ch","password":"...","roles":["user","admin"]}]' node seed-users.js
+//   node tatool-users.js alice@ethz.ch bob@ethz.ch:admin
+//   node tatool-users.js users.json
+//   SEED_USERS='[{"email":"alice@ethz.ch","password":"...","roles":["user","admin"]}]' node tatool-users.js
 //
 // Passwords are never taken from the command line (they would be visible in the process list).
 // Omit a password and a strong one is generated and printed once.
