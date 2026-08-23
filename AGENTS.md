@@ -131,6 +131,42 @@ has all the task *files* but an empty Modules list. That is expected, not a seed
 5. Distribute the participant URL.
 6. Collect data via Analytics or the auto-upload exporter.
 
+### Bulk content management — `seed-content.js`
+
+A fresh database shows nothing in the UI even though the task files are all on the volume, because
+projects and modules are database records. This script closes that gap and is the fast path for
+steps 1, 3 and 4 above:
+
+```
+node seed-content.js status                                        # drift: disk vs database
+node seed-content.js projects                                      # register/refresh project records
+node seed-content.js modules --owner a@ethz.ch [--publish] [--only uzh-ef]
+node seed-content.js export <moduleLabel|moduleId> [out.json]      # back to importable JSON
+```
+
+Idempotent — re-running imports nothing new. It derives each project's executables descriptor from
+the properties its modules actually use, strips `$`-prefixed keys, coerces `moduleMaxSessions: ""`
+to null, and **refuses to publish a module whose referenced project is missing from disk** (those
+would be dead links for participants). It skips `tatool` and `tatool-stimuli`, which `initProjects`
+re-seeds from `projects.json` on every startup.
+
+In-cluster: `kubectl -n li exec deploy/li-tatool -- node seed-content.js status`
+
+### Assets: there is no upload API
+
+⚠ The app exposes **no POST/PUT route for project resources**. Stimuli, instructions and executable
+code reach the volume only by being baked into the image or copied in out-of-band:
+
+```
+kubectl -n li cp ./mystimuli li-tatool-<pod>:/app/app/projects/public/myproject/stimuli
+```
+
+So the workflow for a researcher bringing their own materials is: copy files onto the volume, then
+`seed-content.js projects` to register (or refresh) the project, then build or import the module. The
+alternative the upstream docs assume is **external** resources — host files anywhere and reference
+them by URL with `"access": "external"` — which needs no volume access at all, but note the
+Instruction task rejects external HTML (images only).
+
 ### Module JSON
 
 Verified against `app/projects/public/tatool/modules/demoFlanker.json`. This is what the Editor's
@@ -169,7 +205,18 @@ onto the `moduleDefinition` field of a module document.
 - `order`: `sequential` | `random` (re-randomised each iteration).
 - `condition` on an Element: runs only when it matches the session condition. Plain string, no
   special characters or underscores.
-- Shipped JSONs contain leaked AngularJS `$$hashKey` keys. Harmless, safe to strip.
+- ⚠ **Shipped JSONs contain leaked AngularJS `$$hashKey` keys, and these MUST be stripped** before
+  inserting a module through the API or directly into Mongo. MongoDB rejects field names starting
+  with `$`, so the insert fails with a 500 and an empty `{}` body. 40 of the 41 shipped modules are
+  affected. The Editor's Open button never hits this because `angular.toJson` drops `$$`-prefixed
+  properties on the way out — so the UI path works and a raw `fetch` does not. Strip recursively:
+  ```js
+  const strip = v => Array.isArray(v) ? v.map(strip)
+    : (v && typeof v === 'object')
+      ? Object.fromEntries(Object.entries(v).filter(([k]) => !k.startsWith('$')).map(([k,x]) => [k, strip(x)]))
+      : v;
+  ```
+- `moduleMaxSessions: ""` also fails — the schema field is a `Number`. Coerce empty string to `null`.
 
 **Dual Element:** first child is primary, second is secondary; order is primary → secondary →
 primary. An Executable calling `suspend()` instead of `stop()` loops back for another secondary pass
