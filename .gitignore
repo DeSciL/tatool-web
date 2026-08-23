@@ -12,3 +12,6 @@ app/projects/public/myExperiment/*
 # package-lock.json is intentionally committed: tagged builds are what gets deployed, so the
 # dependency tree has to be reproducible. Do not re-ignore it.
 MODULES.md
+# Database snapshots from `tatool-shell.js db-backup`. These contain the full database — bcrypt
+# password hashes, participant identifiers, collected trial data. Never commit one.
+backups/

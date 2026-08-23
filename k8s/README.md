@@ -40,7 +40,53 @@ Deliberately unset: `REGISTRATION_ENABLED`, `RECAPTCHA_PRIVATE_KEY`, `SENDER_EMA
 
 ---
 
-## Storage — two write locations, both must persist
+## Database snapshots
+
+`tatool-shell.js` writes a gzipped snapshot of the whole database to `/app/backups` (a third
+`subPath` on the same PVC):
+
+```
+kubectl -n li exec deploy/li-tatool -- node tatool-shell.js db-backup --keep 30
+kubectl -n li exec deploy/li-tatool -- node tatool-shell.js db-list
+```
+
+⚠ **This is "undo", not disaster recovery.** The snapshot lives on the same PVC as the data, so both
+are lost together if the volume is. It protects against the likely failures — a deleted module, a bad
+edit, an app bug, a botched migration. **Trident volume snapshots are the actual DR mechanism.**
+
+There is no schedule yet; a nightly CronJob calling `db-backup --keep 30` is the obvious next step.
+
+### Copying a snapshot out, and reopening it locally
+
+The file is self-describing (source database, app version, timestamp, per-collection counts) and
+restores into whatever `DB_URI` points at, so cluster → laptop works directly:
+
+```
+POD=$(kubectl -n li get pod -l app=li-tatool -o jsonpath='{.items[0].metadata.name}')
+kubectl -n li cp $POD:/app/backups/tatool-<stamp>.json.gz ./backups/ -c li-tatool-container
+
+docker compose exec tatool-web node tatool-shell.js db-restore tatool-<stamp>.json.gz        # dry run
+docker compose exec tatool-web node tatool-shell.js db-restore tatool-<stamp>.json.gz --yes  # apply
+```
+
+`./backups` is bind-mounted into the compose container, so a file dropped there is visible
+immediately. Without `--yes` it only prints a `current -> restored` table per collection — always
+read that first, since restore **replaces** the contents of every collection in the snapshot.
+
+Inspect one without restoring: `zcat tatool-<stamp>.json.gz | jq '.counts'`
+
+⚠ **A snapshot is the whole database** — bcrypt password hashes, participant identifiers, collected
+trial data. Copying one to a laptop copies the participant dataset with it, so it falls under the
+study's data-protection scope. `backups/` is gitignored in the app repo; keep copies off shared
+drives and delete them when done.
+
+Types are encoded explicitly (`$oid`, `$date`) because the image has no `mongodump` and its bundled
+`bson` predates `EJSON`. Any unrecognised BSON type makes the backup **fail** rather than silently
+lose fidelity.
+
+---
+
+## Storage — three write locations, all must persist
 
 **`/app/uploads`** — participant CSVs, written to a hardcoded *relative* path
 (`controllers/resourceCtrl.js:182`). `PRIVATE_PATH` is ignored on the local code path, so no env var
@@ -53,6 +99,9 @@ mounting a volume over the path hides them, so an initContainer seeds the volume
 ⚠ **Do not seed with `cp -rn`** — busybox `cp -n` silently skips an entire subtree when the
 destination directory exists, copying nothing. Copy file by file, quoting every path (several
 batteries have spaces in their names). See the initContainer in the manifest.
+
+**`/app/backups`** — database snapshots (see above). Loses nothing if dropped, but you also lose the
+ability to undo a bad edit.
 
 ⚠ **`securityContext.fsGroup: 1001`** is mandatory. A fresh PVC is owned `root:root`, so a non-root
 process cannot write to it.

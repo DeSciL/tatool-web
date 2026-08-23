@@ -104,6 +104,9 @@ spec:
             # Participant data — the highest-value volume. See note 1 above.
             - { name: li-tatool-pvc, mountPath: /app/uploads,      subPath: uploads }
             - { name: li-tatool-pvc, mountPath: /app/app/projects, subPath: projects }
+            # Database snapshots from `tatool-shell.js db-backup`. Same PVC as the data, so this is
+            # "undo" for human/app error, NOT disaster recovery — Trident volume snapshots are that.
+            - { name: li-tatool-pvc, mountPath: /app/backups,      subPath: backups }
           ports:
             - containerPort: 3000
           env:

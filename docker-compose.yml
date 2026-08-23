@@ -78,6 +78,9 @@ services:
       # without it every restart loses the data.
       - tatool_uploads:/app/uploads
       - tatool_projects:/app/app/projects
+      # Bind-mounted, unlike the other two, so a snapshot copied out of the cluster can simply be
+      # dropped into ./backups and restored with `tatool-shell.js db-restore`.
+      - ./backups:/app/backups
       # Alternative for authoring work: bind-mount the repo's projects directory instead of the
       # named volume above, so files can be edited from the host. Diverges from production.
       # - ./app/projects:/app/app/projects

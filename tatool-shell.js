@@ -21,6 +21,7 @@
 //   node tatool-shell.js unpublish <moduleLabel|moduleId>
 //   node tatool-shell.js repair-analytics
 //   node tatool-shell.js export <moduleLabel|moduleId> [outfile.json]
+//   node tatool-shell.js db-backup [--keep N] | db-list | db-restore <file.json.gz> [--yes]
 //
 // NOTE ON ASSETS: the app has no upload endpoint for project files, by design. Stimuli, instructions
 // and executables reach the volume either baked into the image or copied in out-of-band:
@@ -639,6 +640,195 @@ async function cmdExport(target, outfile) {
   say(`wrote ${dest} (${json.length} bytes) — importable via the Editor's Open button.`);
 }
 
+/* ------------------------------------------------------------------ backups */
+
+// A single gzipped JSON file per snapshot, self-describing, restorable into whatever instance
+// DB_URI points at — so a snapshot taken in the cluster can be copied out and reopened locally:
+//   kubectl -n li cp <pod>:/app/backups/<file> ./<file> -c li-tatool-container
+//   docker cp <file> tatool-web:/app/backups/ && docker compose exec tatool-web \
+//     node tatool-shell.js db-restore /app/backups/<file>
+//
+// This is "undo", NOT disaster recovery: the snapshot sits on the same PVC as the data, so both are
+// lost together if the volume is. It protects against the likely failures — a deleted module, a bad
+// edit, an app bug, a botched migration. Trident volume snapshots are the actual DR mechanism.
+//
+// The image has no mongodump/mongorestore and its bundled bson (1.1.6) predates EJSON, so types are
+// encoded explicitly below. At ~600 kB the whole database fits in memory comfortably.
+
+function backupDir() {
+  return process.env.BACKUP_PATH || path.join(__dirname, 'backups');
+}
+
+// MongoDB forbids field names starting with '$', so these wrappers can never collide with real data.
+function encodeBson(v) {
+  if (v === null || v === undefined) return v;
+  if (v instanceof Date) return { $date: v.toISOString() };
+  if (Buffer.isBuffer(v)) return { $binary: v.toString('base64') };
+  if (Array.isArray(v)) return v.map(encodeBson);
+  if (typeof v === 'object' && v._bsontype) {
+    switch (v._bsontype) {
+      case 'ObjectID': case 'ObjectId': return { $oid: v.toHexString() };
+      case 'Binary': return { $binary: v.buffer.toString('base64') };
+      case 'Long': return { $numberLong: v.toString() };
+      case 'Decimal128': return { $numberDecimal: v.toString() };
+      case 'Double': case 'Int32': return v.valueOf();
+      // Refuse rather than silently drop fidelity — a backup you cannot trust is worse than none.
+      default: throw new Error(`Unsupported BSON type '${v._bsontype}'. Refusing to write a lossy backup.`);
+    }
+  }
+  if (v instanceof RegExp) return { $regex: v.source, $options: v.flags };
+  if (typeof v === 'object') {
+    const o = {};
+    for (const k of Object.keys(v)) o[k] = encodeBson(v[k]);
+    return o;
+  }
+  return v;
+}
+
+function decodeBson(v) {
+  if (v === null || typeof v !== 'object') return v;
+  if (Array.isArray(v)) return v.map(decodeBson);
+  const mongo = mongoose.mongo;
+  const keys = Object.keys(v);
+  if (keys.length === 1) {
+    if (keys[0] === '$oid') return new mongo.ObjectId(v.$oid);
+    if (keys[0] === '$date') return new Date(v.$date);
+    if (keys[0] === '$numberLong') return mongo.Long.fromString(v.$numberLong);
+    if (keys[0] === '$numberDecimal') return mongo.Decimal128.fromString(v.$numberDecimal);
+    if (keys[0] === '$binary') return new mongo.Binary(Buffer.from(v.$binary, 'base64'));
+  }
+  if (keys.length === 2 && '$regex' in v && '$options' in v) return new RegExp(v.$regex, v.$options);
+  const o = {};
+  for (const k of keys) o[k] = decodeBson(v[k]);
+  return o;
+}
+
+async function cmdDbBackup(opts) {
+  const zlib = require('zlib');
+  const dir = backupDir();
+  fs.mkdirSync(dir, { recursive: true });
+
+  const db = mongoose.connection.db;
+  const names = (await db.listCollections().toArray()).map(c => c.name).sort();
+  const collections = {}, counts = {};
+  for (const name of names) {
+    const docs = await db.collection(name).find({}).toArray();
+    collections[name] = docs.map(encodeBson);
+    counts[name] = docs.length;
+  }
+
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-');
+  const file = path.join(dir, `tatool-${stamp}.json.gz`);
+  const payload = {
+    tool: 'tatool-shell', format: 1,
+    createdAt: new Date().toISOString(),
+    appVersion: process.env.APP_VERSION || 'dev',
+    database: db.databaseName,
+    counts, collections
+  };
+  const gz = zlib.gzipSync(Buffer.from(JSON.stringify(payload)), { level: 9 });
+  fs.writeFileSync(file, gz);
+
+  // Verify by reading it back: a backup that has not been read is only a hope.
+  const check = JSON.parse(zlib.gunzipSync(fs.readFileSync(file)).toString());
+  const mismatch = names.filter(n => (check.counts[n] || 0) !== counts[n]);
+  if (mismatch.length) {
+    console.error(`Verification FAILED for: ${mismatch.join(', ')}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  let pruned = 0;
+  if (opts.keep) {
+    const all = fs.readdirSync(dir).filter(f => /^tatool-.*\.json\.gz$/.test(f)).sort().reverse();
+    for (const old of all.slice(Number(opts.keep))) { fs.unlinkSync(path.join(dir, old)); pruned++; }
+  }
+
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  emit({ file, bytes: gz.length, database: db.databaseName, documents: total, counts, pruned });
+  say(`wrote ${file}`);
+  say(`  ${(gz.length / 1024).toFixed(1)} kB gzipped · ${total} documents · ${names.length} collections · verified`);
+  if (pruned) say(`  pruned ${pruned} older snapshot(s), keeping ${opts.keep}`);
+  say(`\nCopy it off the volume with:`);
+  say(`  kubectl -n li cp <pod>:${file} ./${path.basename(file)} -c li-tatool-container`);
+}
+
+async function cmdDbList() {
+  const zlib = require('zlib');
+  const dir = backupDir();
+  if (!fs.existsSync(dir)) { emit({ dir, snapshots: [] }); say(`No backup directory at ${dir}.`); return; }
+  const rows = [];
+  for (const f of fs.readdirSync(dir).filter(f => /^tatool-.*\.json\.gz$/.test(f)).sort().reverse()) {
+    const full = path.join(dir, f);
+    const st = fs.statSync(full);
+    let meta = {};
+    try {
+      const j = JSON.parse(zlib.gunzipSync(fs.readFileSync(full)).toString());
+      meta = { database: j.database, appVersion: j.appVersion, createdAt: j.createdAt,
+        documents: Object.values(j.counts || {}).reduce((a, b) => a + b, 0) };
+    } catch (e) { meta = { error: 'unreadable: ' + e.message }; }
+    rows.push({ file: f, bytes: st.size, ...meta });
+  }
+  emit({ dir, snapshots: rows });
+  say(`${rows.length} snapshot(s) in ${dir}\n`);
+  rows.forEach(r => say(`  ${r.file}  ${(r.bytes / 1024).toFixed(1)}kB  ` +
+    (r.error ? r.error : `${r.documents} docs  db=${r.database}  app=${r.appVersion}`)));
+}
+
+async function cmdDbRestore(target, opts) {
+  const zlib = require('zlib');
+  if (!target) {
+    console.error('Usage: node tatool-shell.js db-restore <file.json.gz> [--yes]');
+    const dir = backupDir();
+    if (fs.existsSync(dir)) {
+      const all = fs.readdirSync(dir).filter(f => /\.json\.gz$/.test(f)).sort().reverse();
+      if (all.length) { console.error('\nAvailable:'); all.slice(0, 10).forEach(f => console.error('  ' + path.join(dir, f))); }
+    }
+    process.exitCode = 1;
+    return;
+  }
+  const file = fs.existsSync(target) ? target : path.join(backupDir(), target);
+  if (!fs.existsSync(file)) { console.error(`No such file: ${file}`); process.exitCode = 1; return; }
+
+  const snap = JSON.parse(zlib.gunzipSync(fs.readFileSync(file)).toString());
+  if (snap.format !== 1) { console.error(`Unsupported backup format '${snap.format}'.`); process.exitCode = 1; return; }
+
+  const db = mongoose.connection.db;
+  const names = Object.keys(snap.collections).sort();
+  say(`snapshot : ${file}`);
+  say(`  taken  : ${snap.createdAt}  from database '${snap.database}' (app ${snap.appVersion})`);
+  say(`  target : database '${db.databaseName}' at ${(process.env.DB_URI || 'localhost').replace(/\/\/[^@]*@/, '//')}\n`);
+  say('  collection            current -> restored');
+  for (const n of names) {
+    const now = await db.collection(n).countDocuments().catch(() => 0);
+    say(`    ${n.padEnd(22)} ${String(now).padStart(6)} -> ${String(snap.counts[n]).padStart(6)}`);
+  }
+
+  if (!opts.yes) {
+    say('\nThis REPLACES the contents of those collections. Re-run with --yes to proceed.');
+    emit({ dryRun: true, file, counts: snap.counts });
+    return;
+  }
+
+  const result = {};
+  for (const n of names) {
+    const docs = snap.collections[n].map(decodeBson);
+    await db.collection(n).deleteMany({});
+    if (docs.length) await db.collection(n).insertMany(docs, { ordered: false });
+    result[n] = await db.collection(n).countDocuments();
+  }
+  const bad = names.filter(n => result[n] !== snap.counts[n]);
+  emit({ file, restored: result, mismatches: bad });
+  say('\nrestored:');
+  names.forEach(n => say(`  ${n.padEnd(22)} ${result[n]} documents`));
+  if (bad.length) {
+    console.error(`\nCount mismatch after restore: ${bad.join(', ')}`);
+    process.exitCode = 1;
+  } else {
+    say('\nAll counts match the snapshot.');
+  }
+}
+
 /* --------------------------------------------------------------------- menu */
 
 async function cmdMenu() {
@@ -668,6 +858,8 @@ async function cmdMenu() {
     console.log('  8  unpublish          withdraw a module from circulation');
     console.log('  9  repair analytics   backfill missing Analytics records');
     console.log(' 10  export a module    write a definition back out as JSON');
+    console.log(' 11  db backup          gzipped snapshot of the database');
+    console.log(' 12  db restore         restore a snapshot (asks first)');
     console.log('  q  quit');
     const choice = await ask('\n  choice> ');
     console.log('');
@@ -711,6 +903,16 @@ async function cmdMenu() {
         mods.forEach(m => console.log(`  ${String(m.moduleLabel || '(no label)').padEnd(28)} ${m.moduleName}`));
         const t = await ask('\n  moduleLabel or moduleId: ');
         if (t) await cmdExport(t, (await ask('  output file (blank = <label>.json): ')) || undefined);
+      } else if (choice === '11') {
+        const keep = await ask('  keep how many snapshots? (blank = keep all): ');
+        await cmdDbBackup({ keep: keep || null });
+      } else if (choice === '12') {
+        await cmdDbList();
+        const f = await ask('\n  snapshot file (blank = cancel): ');
+        if (f) {
+          await cmdDbRestore(f, { yes: false });
+          if (await yes('\n  proceed and REPLACE current data?')) await cmdDbRestore(f, { yes: true });
+        }
       } else if (/^q(uit)?$/i.test(choice)) {
         break;
       } else {
@@ -741,6 +943,10 @@ const USAGE = `Tatool shell — inspect and repair what the UI does not show.
   repair-analytics              backfill missing Analytics records
   export <mod> [outfile.json]   dump a module definition
 
+  db-backup [--keep N]          gzipped snapshot of the whole database to /app/backups
+  db-list                       list snapshots
+  db-restore <file> [--yes]     restore a snapshot (dry run without --yes)
+
   --json                        machine-readable output (all commands)
 `;
 
@@ -752,7 +958,8 @@ async function main() {
     (process.stdin.isTTY ? 'menu' : null);
 
   const COMMANDS = ['menu', 'doctor', 'status', 'data', 'accounts', 'projects', 'modules',
-    'publish', 'unpublish', 'repair-analytics', 'export'];
+    'publish', 'unpublish', 'repair-analytics', 'export',
+    'db-backup', 'db-list', 'db-restore'];
   if (!command || !COMMANDS.includes(command)) {
     console.log(USAGE);
     process.exitCode = command ? 1 : 0;
@@ -778,6 +985,9 @@ async function main() {
     else if (command === 'unpublish') await cmdUnpublish(positionals[0]);
     else if (command === 'repair-analytics') await cmdRepairAnalytics();
     else if (command === 'export') await cmdExport(positionals[0], positionals[1]);
+    else if (command === 'db-backup') await cmdDbBackup({ keep: flag('--keep') });
+    else if (command === 'db-list') await cmdDbList();
+    else if (command === 'db-restore') await cmdDbRestore(positionals[0], { yes: argv.includes('--yes') });
   } finally {
     await mongoose.connection.close();
   }
