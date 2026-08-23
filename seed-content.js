@@ -26,6 +26,7 @@ const mongoose = require('mongoose');
 const Project = require('./models/project');
 const DeveloperModule = require('./models/module').developerModule;
 const RepositoryModule = require('./models/module').repositoryModule;
+const Analytics = require('./models/analytics');
 
 // Owned by projects.json and re-seeded by initProjects() on every startup — writing them here would
 // just be overwritten.
@@ -108,6 +109,31 @@ function deriveExecutables(modules) {
     })(definition.moduleHierarchy);
   }
   return byProject;
+}
+
+// Mirrors analyticsCtrl.initAnalytics. That is only called from developerCtrl's *update* path (the
+// Editor's save), NOT from publish — so a module published any other way has no Analytics record.
+// Without one it never appears under Analytics, and addAnalyticsUser silently no-ops for every
+// participant because it only acts when the record already exists. Trial CSVs still land on disk, so
+// nothing is lost; it just cannot be seen or downloaded through the UI.
+async function ensureAnalytics(mod) {
+  const existing = await Analytics.findOne({ moduleId: mod.moduleId, created_by: mod.created_by });
+  if (existing) {
+    existing.moduleName = mod.moduleName;
+    existing.moduleLabel = mod.moduleLabel;
+    await existing.save();
+    return false;
+  }
+  const a = new Analytics();
+  a.moduleId = mod.moduleId;
+  a.moduleName = mod.moduleName;
+  a.moduleLabel = mod.moduleLabel;
+  a.created_by = mod.created_by;
+  a.created_at = new Date();
+  a.email = [mod.created_by];
+  a.userData = [];
+  await a.save();
+  return true;
 }
 
 function executablesDescriptor(derived) {
@@ -276,11 +302,32 @@ async function cmdModules(opts) {
     repo.sessions = {};
     repo.updated_at = new Date();
     await RepositoryModule.findOneAndUpdate({ moduleId: doc.moduleId }, repo, { upsert: true, new: true });
+    await ensureAnalytics(doc);
     publishedCount++;
     console.log(`  published ${definition.name}`);
   }
   console.log(`\nimported ${imported}, already present ${existing}, published ${publishedCount}` +
     (blocked ? `, withheld ${blocked} (missing projects)` : ''));
+}
+
+// Backfill Analytics records for modules that were published without one. Safe to re-run.
+async function cmdRepairAnalytics() {
+  const published = await DeveloperModule.find({ moduleType: { $exists: true, $nin: [''] } });
+  if (!published.length) {
+    console.log('No published modules found.');
+    return;
+  }
+  let created = 0, refreshed = 0;
+  for (const mod of published) {
+    if (await ensureAnalytics(mod)) { created++; console.log(`  created  ${mod.moduleName}`); }
+    else refreshed++;
+  }
+  console.log(`\ncreated ${created}, already present ${refreshed}, of ${published.length} published modules.`);
+  if (created) {
+    console.log('\nModules now appear under Analytics and "download all data" works. Per-participant');
+    console.log('rows stay empty for runs that happened before this fix — addAnalyticsUser no-ops when');
+    console.log('the record is missing — but their CSVs are on disk and included in the download.');
+  }
 }
 
 async function cmdExport(target, outfile) {
@@ -316,13 +363,14 @@ async function main() {
   }
 
   // Usage before connecting, so `node seed-content.js` is useful without a database.
-  const COMMANDS = ['status', 'projects', 'modules', 'export'];
+  const COMMANDS = ['status', 'projects', 'modules', 'export', 'repair-analytics'];
   if (!COMMANDS.includes(command)) {
     console.log('Commands:');
     console.log('  status                                              drift between disk and database');
     console.log('  projects                                            register/refresh project records');
     console.log('  modules --owner <email> [--publish] [--only <s>]    import module definitions');
     console.log('  export <moduleLabel|moduleId> [outfile.json]        dump a module back to JSON');
+    console.log('  repair-analytics                                    backfill missing Analytics records');
     process.exitCode = command ? 1 : 0;
     return;
   }
@@ -339,6 +387,7 @@ async function main() {
     else if (command === 'projects') await cmdProjects();
     else if (command === 'modules') await cmdModules(opts);
     else if (command === 'export') await cmdExport(argv[1], argv[2]);
+    else if (command === 'repair-analytics') await cmdRepairAnalytics();
   } finally {
     await mongoose.connection.close();
   }
