@@ -44,6 +44,7 @@ Everything below either supports those or keeps you from breaking the deployment
 | `app/projects/` | Task content on disk: stimuli, instructions, executables, module JSONs |
 | `k8s/` | Deployment brief + sanitised reference manifest |
 | `seed-users.js` | Provisions accounts (self-registration is disabled) |
+| `seed-content.js` | Registers projects, imports/publishes modules, exports definitions |
 
 Editing anything under `app/` requires a webpack rebuild before it takes effect — `dist/` is what is
 served.
@@ -152,20 +153,35 @@ re-seeds from `projects.json` on every startup.
 
 In-cluster: `kubectl -n li exec deploy/li-tatool -- node seed-content.js status`
 
-### Assets: there is no upload API
+### Assets: external URLs are the intended path
 
-⚠ The app exposes **no POST/PUT route for project resources**. Stimuli, instructions and executable
-code reach the volume only by being baked into the image or copied in out-of-band:
+There is **no upload API, by design.** The FAQ states it outright: *"We currently don't support the
+upload of custom stimuli."* The app has no multipart middleware, no POST route for project
+resources, and the Editor's resource picker is a **free-text filename field** — it never enumerates
+the folder, which is why a wrong name yields a silent 404. The only file input in the UI is the
+Editor's Open button, and that parses module JSON client-side with `FileReader`.
 
-```
-kubectl -n li cp ./mystimuli li-tatool-<pod>:/app/app/projects/public/myproject/stimuli
-```
+Upstream's two intended paths:
 
-So the workflow for a researcher bringing their own materials is: copy files onto the volume, then
-`seed-content.js projects` to register (or refresh) the project, then build or import the module. The
-alternative the upstream docs assume is **external** resources — host files anywhere and reference
-them by URL with `"access": "external"` — which needs no volume access at all, but note the
-Instruction task rejects external HTML (images only).
+1. **External resources** — first-class. `"project": { "name": "External Resource", "access":
+   "external" }` with a URL. Set `stimuliPath` to a directory URL and the stimuli CSV can then
+   reference files by bare filename, with `stimuliPath` as prefix. `use-host.html` documents doing
+   this with Cloudinary. **Fully self-service — no cluster access.**
+2. **Filesystem** — for self-hosted instances, drop files into `app/projects/<access>/<project>/`.
+   Upstream assumes you own the machine; under K8S that means:
+   ```
+   kubectl -n li cp ./stimuli li-tatool-<pod>:/app/app/projects/public/<project>/stimuli
+   ```
+
+| Asset | Can be external? |
+|---|---|
+| Stimuli CSV, images, video, audio | yes |
+| Instruction **images** | yes |
+| Instruction **HTML pages** | **no** — "External HTML Resources are currently not supported" |
+
+So route researchers to external hosting by default. Only HTML instruction pages require the volume,
+and image-based instructions avoid even that. After copying files onto the volume, run
+`seed-content.js projects` to register or refresh the project.
 
 ### Module JSON
 
@@ -370,6 +386,45 @@ Key facts for a simulator:
   clean up afterwards, and be aware rate-limiting this endpoint is an open TODO.
 - Request logging skips successful stimulus fetches, so a load run will not be visible in the logs
   except via the non-static endpoints.
+
+---
+
+## Surveying the upstream module catalogue
+
+Upstream's hosted instance <https://www.tatool-web.com> is still live and its public repository holds
+far more modules than this repo ships (229 vs 41 as of 2026-08-23). Only the *definitions* differ —
+they live in upstream's database and were never in git. The task *files* mostly overlap, so most
+upstream modules would run here unchanged.
+
+To regenerate the overview (output goes to `MODULES.md`, which is **gitignored** — it is a scratch
+overview, not a deliverable):
+
+1. **Catalogue** — needs a tatool-web.com account, one authenticated call. `GET /api/login` with
+   HTTP basic auth returns a JWT; then `GET /api/user/repository` with `Authorization: Bearer`
+   lists every public module — but with `moduleDefinition` stripped (`getAll` projects it out).
+2. **Definitions** — no auth needed: `GET /public/run/<moduleId>` returns the full document
+   including `moduleDefinition`. Pace these (~110 ms); it was 229 requests to someone else's server.
+3. **Classify** — walk each definition collecting `project.name`. Compare against
+   `ls app/projects/public`. A module runs here iff every referenced project exists locally;
+   `External Resource` is the pseudo-project for external URLs. Missing project ⇒ resource lookups
+   404 mid-task.
+4. **Doc links** — `https://<host>/#!/doc/<page>`. Prefer the battery page (`lib-bat-*`) for the
+   referenced project, then a specific task page (`lib-exp-*`, `lib-train-*`), and only fall back to
+   accessory pages (`lib-acc-*`). `tatoolInstruction` appears in nearly every module, so keying off
+   the first executable sends everything to `lib-acc-instruction`.
+
+Two traps that produced wrong output on the first attempt:
+
+- **The author field is unreliable.** It is free text and is inherited when a module is cloned, so
+  `Tatool` includes user studies like `Group-6-ini-retreat - G1`, and
+  `University of Zurich (von Bastian…)` includes `EF Battery: Inhibition_ELEONORA_PRETEST`. Do not
+  use it to separate library content from someone's experiment.
+- **Module names are not unique.** Upstream has 19 duplicated names with different `moduleId`s. Key
+  on `moduleId`; name-matching inflates counts.
+
+Norms: public modules are published for reuse and the docs ask only that you cite the original
+authors, so reading them is fine. Keep it read-only — do not install, publish, or modify anything on
+an account that is not ours — and do not go after private or invite-only modules.
 
 ---
 
