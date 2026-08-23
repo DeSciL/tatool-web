@@ -13,7 +13,7 @@ need a new tag plus an image bump in `DescilK8S`.
 1. **Mongoose 5.13.23 → 6.13.11.** Clears a critical search injection (`GHSA-vg7j-7cwx-8wgw`) and a
    `$nor` NoSQL injection, neither fixable in 5.x. Work: drop the four removed connect options
    (`useNewUrlParser`, `useUnifiedTopology`, `useFindAndModify`, `useCreateIndex`) from
-   [server.js](server.js), [tatool-users.js](tatool-users.js), [seed-sample-module.js](seed-sample-module.js);
+   [server.js](server.js), [tatool-users.js](tatool-users.js), [tatool-shell.js](tatool-shell.js);
    check `strictQuery` and `findByIdAndUpdate` default changes.
    ⚠ **Not 7+** — callbacks were removed there, and this codebase has 114 callback-style call sites
    across 11 files.

@@ -394,6 +394,11 @@ async function cmdAccounts(opts) {
   rows.forEach(r => say(`  ${String(r.email).padEnd(28)} code=${String(r.code).padEnd(7)}` +
     ` owns=${String(r.modulesOwned).padEnd(4)} verified=${r.verified}  ${(r.roles || []).join('/')}`));
   say('\nAnalytics is owner-scoped: only the account that published a module can see its data.');
+  // This command deliberately does not create accounts, so point at the tool that does.
+  say('\nTo create accounts (passwords are generated and printed once):');
+  say('  node tatool-users.js someone@ethz.ch another@ethz.ch:admin');
+  say('Role suffix: :admin | :researcher (default) | :user, or a list like :user,developer.');
+  say('Re-running is safe — existing accounts are skipped, not reset.');
 
   if (opts.create) {
     // Spawn tatool-users.js so password generation and the bcrypt pre-save hook stay in one place.
@@ -526,6 +531,27 @@ async function publishModule(doc) {
   await ensureAnalytics(doc);
 }
 
+// Modules are addressed by moduleLabel (or moduleId), which is NOT the project name — a common
+// mix-up, e.g. project "stefan-stroop" vs label "stefanStroop". Show near matches so the fix is
+// obvious rather than requiring a separate lookup.
+async function noSuchModule(target) {
+  console.error(`No developer module '${target}'.`);
+  const all = await DeveloperModule.find({}, { moduleLabel: 1, moduleName: 1, moduleType: 1 });
+  const norm = t => String(t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const near = all.filter(m => norm(m.moduleLabel).includes(norm(target)) ||
+                               norm(m.moduleName).includes(norm(target)));
+  if (near.length) {
+    console.error('\nDid you mean (label — name):');
+    near.slice(0, 8).forEach(m => console.error(`  ${String(m.moduleLabel || '(no label)').padEnd(26)} ${m.moduleName}` +
+      (m.moduleType ? '' : '   [not published]')));
+  } else {
+    console.error(`\nModules are addressed by label, not by project name. ${all.length} exist:`);
+    all.slice(0, 15).forEach(m => console.error(`  ${String(m.moduleLabel || '(no label)').padEnd(26)} ${m.moduleName}`));
+    if (all.length > 15) console.error(`  ... +${all.length - 15} more`);
+  }
+  process.exitCode = 1;
+}
+
 // The trap: editing a module does nothing for users who already installed it unless moduleVersion
 // increases, because the Update button is gated on installedVersion < repositoryVersion.
 async function cmdPublish(target) {
@@ -535,7 +561,7 @@ async function cmdPublish(target) {
     return;
   }
   const doc = await DeveloperModule.findOne({ $or: [{ moduleLabel: target }, { moduleId: target }] });
-  if (!doc) { console.error(`No developer module '${target}'.`); process.exitCode = 1; return; }
+  if (!doc) { await noSuchModule(target); return; }
   const first = !doc.moduleType;
   const before = parseInt(doc.moduleVersion) || 0;
   doc.moduleVersion = before + 1;
@@ -560,7 +586,7 @@ async function cmdUnpublish(target) {
     return;
   }
   const doc = await DeveloperModule.findOne({ $or: [{ moduleLabel: target }, { moduleId: target }] });
-  if (!doc) { console.error(`No developer module '${target}'.`); process.exitCode = 1; return; }
+  if (!doc) { await noSuchModule(target); return; }
   if (!doc.moduleType) {
     emit({ module: doc.moduleName, alreadyUnpublished: true });
     say(`${doc.moduleName} is not published.`);

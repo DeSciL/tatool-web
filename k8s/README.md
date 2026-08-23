@@ -98,6 +98,26 @@ data-protection scope and needs a retention limit.
 
 ---
 
+## Admin shell
+
+`tatool-shell.js` is in the image and is the entry point for everything the UI does not show —
+diagnostics, project/module records, collected data. Interactive menu, or subcommands with `--json`:
+
+```
+kubectl -n li exec -it deploy/li-tatool -- node tatool-shell.js          # menu
+kubectl -n li exec    deploy/li-tatool -- node tatool-shell.js doctor    # exit 1 on errors
+kubectl -n li exec    deploy/li-tatool -- node tatool-shell.js data      # what has been collected
+```
+
+**Run `doctor` after every deploy.** It checks the things that fail silently here: resource files that
+do not exist, modules referencing a missing project, published modules with no Analytics record,
+installed copies stale against the published version. Current accepted baseline is **5 errors,
+5 warnings** — see the app repo's `TODO.md` for why each is expected. Anything beyond that is new.
+
+Modules are addressed by **label**, not project name (`stefanStroop`, not `stefan-stroop`).
+
+---
+
 ## Accounts
 
 Self-registration is disabled, so a fresh instance has no users:

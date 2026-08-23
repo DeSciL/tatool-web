@@ -146,7 +146,8 @@ node tatool-shell.js data [--export <mod>]  # collected data summary / tarball
 node tatool-shell.js accounts               # users, roles, what each owns
 node tatool-shell.js projects [--only <name>]
 node tatool-shell.js modules --owner a@ethz.ch [--publish] [--only uzh-ef]
-node tatool-shell.js publish-changes <mod>  # version bump + republish + analytics
+node tatool-shell.js publish <mod>          # version bump + (re)publish + analytics
+node tatool-shell.js unpublish <mod>        # withdraw from the repository; data untouched
 node tatool-shell.js repair-analytics
 node tatool-shell.js export <mod> [out.json]
 ```
@@ -232,8 +233,7 @@ onto the `moduleDefinition` field of a module document.
 
 - `label` becomes `moduleId` in the CSV export.
 - `exportFormat`: `long` (default) or `legacy` (implicit fallback). `export.service.js:156` branches
-  on `long` and treats anything else as legacy. **`"csv"` is not valid** — note
-  `seed-sample-module.js` gets this wrong.
+  on `long` and treats anything else as legacy, so **`"csv"` is not valid** despite looking plausible.
 - `moduleMaxSessions: null` = unlimited. `numIterations: -1` = unlimited.
 - `order`: `sequential` | `random` (re-randomised each iteration).
 - `condition` on an Element: runs only when it matches the session condition. Plain string, no
@@ -388,8 +388,13 @@ stale, i.e. researchers testing from MY MODULES.
    repository at the same version — no Update button, and every existing user silently keeps the old
    definition forever. The Editor increments on save; API and DB edits must do it explicitly.
 
-7. **Create the Analytics record** unless you published through the Editor. `publish` does not call
-   `initAnalytics` — only `developerCtrl`'s *update* path does:
+   **`tatool-shell.js publish <label>` does all three steps** (bump, republish, ensure analytics), so
+   prefer it over hand-rolling. Note it takes the module **label**, not the project name —
+   `stefanStroop`, not `stefan-stroop`.
+
+7. **Create the Analytics record** unless you published through the Editor or used
+   `tatool-shell.js publish`. `developerCtrl.publish` does not call `initAnalytics` — only its
+   *update* path does:
    ```
    kubectl -n li exec deploy/li-tatool -- node tatool-shell.js repair-analytics
    ```
